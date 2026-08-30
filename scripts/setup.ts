@@ -1,0 +1,48 @@
+// bun scripts/setup.ts — link the runtime this product builds against.
+//
+// The guest is bundled by the vendored toolchain but resolved from THIS
+// repository: an import of "solid-js" or "@pocketjs/framework/components" in
+// app/ walks up to ./node_modules, not into the submodule. So the packages
+// vendor/pocketjs already installed are linked here rather than installed a
+// second time, which also guarantees one copy of Solid — two would give the
+// app a reactive graph the framework does not own.
+
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
+import { ROOT, VENDOR } from "./paths.ts";
+
+if (!existsSync(resolve(VENDOR, "package.json"))) {
+  throw new Error("Pocket Term setup: initialize vendor/pocketjs first (git submodule update --init)");
+}
+
+const links = new Map<string, string>([
+  ["node_modules/@pocketjs/framework", "vendor/pocketjs"],
+  ["node_modules/solid-js", "vendor/pocketjs/node_modules/solid-js"],
+  ["node_modules/opentype.js", "vendor/pocketjs/node_modules/opentype.js"],
+  ["node_modules/@types/opentype.js", "vendor/pocketjs/node_modules/@types/opentype.js"],
+  ["node_modules/bun-types", "vendor/pocketjs/node_modules/bun-types"],
+  ["node_modules/typescript", "vendor/pocketjs/node_modules/typescript"],
+]);
+
+for (const [destination, source] of links) {
+  const target = resolve(ROOT, source);
+  if (!existsSync(target)) {
+    throw new Error(`Pocket Term setup: missing ${source}; run bun install in vendor/pocketjs`);
+  }
+  const link = resolve(ROOT, destination);
+  mkdirSync(dirname(link), { recursive: true });
+  rmSync(link, { recursive: true, force: true });
+  symlinkSync(relative(dirname(link), target), link, "dir");
+}
+
+// The daemon's own native dependencies (node-pty, @wterm/ghostty) are not
+// PocketJS's, and node-pty's prebuilt spawn-helper loses its exec bit through
+// some installs — serve.ts restores it at startup.
+const install = Bun.spawnSync(["bun", "install"], {
+  cwd: resolve(ROOT, "host"),
+  stdout: "inherit",
+  stderr: "inherit",
+});
+if (install.exitCode !== 0) throw new Error("Pocket Term setup: host dependencies failed to install");
+
+console.log("Pocket Term setup: runtime links and daemon dependencies ready");

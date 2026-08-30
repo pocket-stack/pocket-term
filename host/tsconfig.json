@@ -1,0 +1,13 @@
+{
+  // The daemon carries native dependencies (node-pty, @wterm/ghostty) the
+  // repository gate must not require, so the root tsconfig leaves this
+  // directory out and this one takes over for editors and for
+  // `bunx tsc --noEmit` run here after a local `bun install`.
+  // grid.ts/glyphs.ts/keys.ts/wire.ts stay free of them and are typechecked
+  // at the root through the tests that import them.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "."
+  },
+  "include": ["."]
+}

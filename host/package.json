@@ -1,0 +1,13 @@
+{
+  "name": "pocketjs-term-host",
+  "private": true,
+  "description": "Mac companion daemon for Pocket Term: PTY sessions + authoritative libghostty cores served to PocketJS devices over the SVC WIRE (PKNT) transport.",
+  "type": "module",
+  "scripts": {
+    "serve": "node serve.ts"
+  },
+  "dependencies": {
+    "@wterm/ghostty": "^0.3.4",
+    "node-pty": "^1.1.0"
+  }
+}
