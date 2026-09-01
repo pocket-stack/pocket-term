@@ -50,6 +50,14 @@ const TAB_W = 72;
 const TAB_NEW_W = 30;
 const KB_TOP = 240 - KB_H;
 
+/** The strip between the tabs and the keyboard: two 12 px lines, centred. */
+const HINT_LINE = 14;
+const HINT_TOP = Math.round((KB_TOP - TAB_H - (HINT_LINE + 12)) / 2);
+const HINT_BUTTONS = "SELECT new · L/R switch · hold ZL = ctrl";
+/** 12 px regular — slot 0 of the pinned table the compiler bakes
+ *  (framework/compiler/tailwind.ts), which is what `text-xs` draws in. */
+const HINT_SLOT = 0;
+
 /* Closing a session is a hold, then a slide, then a release — not a tap on a
  * small ×. The panel is resistive and single-contact: an 18 px target inside
  * a 72 px tab was a coin flip, and getting it wrong killed a shell. Holding a
@@ -73,6 +81,8 @@ const DPAD_REPEAT = 4;
 export default function TermApp() {
   const ops = getOps();
   const advance = ops.measureText("M", MONO_SLOT);
+  // What the hint occupies is what the host name cannot have.
+  const hintWidth = Math.ceil(ops.measureText(HINT_BUTTONS, HINT_SLOT));
   const CELL_W = advance > 0 ? Math.max(6, Math.round(advance)) : 7;
   const TRACK = advance > 0 ? CELL_W - advance : 0;
   const COLS = Math.floor(400 / CELL_W);
@@ -283,25 +293,44 @@ export default function TermApp() {
             </View>
           </Show>
 
+          {/* Both columns are anchored to their own edge instead of sharing a
+              flex row. A companion's name is whatever its machine is called —
+              the macOS default is "evandeMacBook-Pro" — and in a row that long
+              name widened the left column until it pushed the hints off the
+              320 px panel. Anchored, the hints cannot move, and the name is
+              given the width that is actually left over: measured, because the
+              hint beside it is the thing that decides it. */}
           <View
-            class="absolute left-0 right-0 flex-row items-center px-[8] gap-[10]"
+            class="absolute left-0 right-0 overflow-hidden"
             style={{ insetT: TAB_H, height: KB_TOP - TAB_H }}
           >
-            <View class="flex-col gap-[2]">
-              <Text class={store.conn() === "live" ? "text-xs text-[#61c16d]" : "text-xs text-[#c95c5c]"}>
-                {store.conn() === "live" ? "connected" : store.conn()}
-              </Text>
-              <Text class="text-xs text-[#5d708c]">{store.hostName() || "—"}</Text>
-            </View>
-            <View class="grow" />
-            <View class="flex-col gap-[2] items-end">
-              <Text class="text-xs text-[#3d4c63]">SELECT new · L/R switch · hold ZL = ctrl</Text>
-              <Text class="text-xs text-[#3d4c63]">
-                {store.dynamicGlyphs() > 0
-                  ? `pad scrolls · ${store.dynamicGlyphs()} runtime glyphs`
-                  : "pad scrolls history · A ⏎ · B ⌫"}
-              </Text>
-            </View>
+            <Text
+              class={
+                store.conn() === "live"
+                  ? "absolute left-[8] text-xs text-[#61c16d]"
+                  : "absolute left-[8] text-xs text-[#c95c5c]"
+              }
+              style={{ insetT: HINT_TOP }}
+            >
+              {store.conn() === "live" ? "connected" : store.conn()}
+            </Text>
+            <Text
+              class="absolute left-[8] text-xs text-[#5d708c]"
+              style={{ insetT: HINT_TOP + HINT_LINE, insetR: hintWidth + 16 }}
+            >
+              {store.hostName() || "—"}
+            </Text>
+            <Text
+              class="absolute right-[8] text-xs text-[#3d4c63]"
+              style={{ insetT: HINT_TOP }}
+            >
+              {HINT_BUTTONS}
+            </Text>
+            <Text class="absolute right-[8] text-xs text-[#3d4c63]" style={{ insetT: HINT_TOP + HINT_LINE }}>
+              {store.dynamicGlyphs() > 0
+                ? `pad scrolls · ${store.dynamicGlyphs()} runtime glyphs`
+                : "pad scrolls history · A ⏎ · B ⌫"}
+            </Text>
           </View>
 
           <Keyboard

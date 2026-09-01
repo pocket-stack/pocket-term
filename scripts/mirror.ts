@@ -9,6 +9,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { $ } from "bun";
+import { passThrough } from "./run.ts";
 import { validateAndResolveBuildPlan } from "../vendor/pocketjs/framework/src/manifest/resolve.ts";
 import { DIST, PLAN_DIR, ROOT, VENDOR } from "./paths.ts";
 
@@ -29,7 +30,7 @@ const planPath = resolve(PLAN_DIR, `${plan.app.output}.${target}.plan.json`);
 writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
 
 mkdirSync(DIST, { recursive: true });
-await $`bun ${VENDOR}/tools/build.ts --plan=${planPath} --project-root=${ROOT} --outdir=${DIST}`.cwd(ROOT);
-await $`cargo build --release --locked`.cwd(`${VENDOR}/hosts/desktop`);
+await passThrough($`bun ${VENDOR}/tools/build.ts --plan=${planPath} --project-root=${ROOT} --outdir=${DIST}`.cwd(ROOT));
+await passThrough($`cargo build --release --locked`.cwd(`${VENDOR}/hosts/desktop`));
 
 console.log(`pocket-term: built ${plan.app.output} for ${target} + the desktop host`);

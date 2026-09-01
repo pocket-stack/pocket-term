@@ -5,6 +5,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { $ } from "bun";
+import { passThrough } from "./run.ts";
 import { ROOT, VENDOR } from "./paths.ts";
 
 const keys = resolve(ROOT, ".pocket/devices");
@@ -16,4 +17,4 @@ if (existsSync(keys)) {
   }
 }
 
-await $`bun ${VENDOR}/tools/3ds-dev.ts probe ${process.argv.slice(2)}`.cwd(ROOT);
+await passThrough($`bun ${VENDOR}/tools/3ds-dev.ts probe ${process.argv.slice(2)}`.cwd(ROOT));

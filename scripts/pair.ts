@@ -6,9 +6,10 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { $ } from "bun";
+import { passThrough } from "./run.ts";
 import { ROOT, VENDOR } from "./paths.ts";
 
-await $`bun ${VENDOR}/tools/3ds-dev.ts pair ${process.argv.slice(2)}`.cwd(ROOT);
+await passThrough($`bun ${VENDOR}/tools/3ds-dev.ts pair ${process.argv.slice(2)}`.cwd(ROOT));
 
 const vendorKeys = resolve(VENDOR, ".pocket/3ds/devices");
 if (existsSync(vendorKeys)) {
