@@ -19,7 +19,8 @@ baseline. The synchronization mechanism is documented in
 | Native font/layout frame | Inspected at 80×24; Spleentt, full-width last column and bottom touchpad |
 | Native delayed-history frame 180 | Inspected: translated rows retain identity, missing rows show skeletons |
 | Native settled-history frame 360 | Inspected: missing rows filled, consecutive row identities and the reading anchor preserved |
-| Physical revision acceptance | Pending FTP availability and fresh stick/touch/font testing |
+| Physical FTP deployment | Passed: production launcher and pairing key read back byte-identically on 2026-09-06 at 21:46 UTC |
+| Physical revision acceptance | Pending fresh launch and stick/touch/font testing |
 
 [Native font/layout](terminal-80x24.png), [history while loading](history-loading.png),
 [history after filling](history-settled.png), and
@@ -33,9 +34,18 @@ These deterministic emulator frames do not establish physical frame rate.
 | pocketterm-main.3dsx | 1,937,872 | `6f65c3a374681c1151175fc088e00ea8727df70c060e46a315f3a7d70f377c8f` |
 | pocketterm-main.pocket | 635,416 | `fc3180add555cc7a5cf7136162a49f21007807650d2c411a36853cc82c1502c5` |
 
-Both companion and native launcher must be updated together: this revision
-uses terminal protocol 4. The running protocol-3 companion is still serving
-the accepted earlier build until deployment.
+**The protocol-4 launcher is installed at `/3DS/pocketterm-main.3dsx`.**
+The previous launcher was backed up and verified at
+`/pocketjs/runtime/native-backups/pocketterm-main-9f4a08ce175b4af4.3dsx`.
+The FTP receipt is `.pocket/last-deploy.json`; the installed hash matches
+the current artifact above.
+
+The updated Mac companion is running and waiting for the console to leave
+ftpd. The previous provider was stopped while its durable terminal worker
+and both existing PTYs were preserved for their original desktop mirrors.
+Those sessions are not migrated into the new worker. Its new sessions use
+terminal protocol 4. The current trace is `.pocket/cache-daemon.log`;
+preservation details are in `.pocket/retired-protocol3-daemon.json`.
 
 ## Initial paired-terminal baseline
 
