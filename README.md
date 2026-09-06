@@ -121,9 +121,14 @@ encoding, and which codepoints the device can already draw.
 
 ## Status
 
-Incubating, and verified on hardware. The SVC WIRE transport it rides on lives
-in PocketJS ([pocket-stack/pocketjs#345](https://github.com/pocket-stack/pocketjs/pull/345));
-until that lands on `main`, `vendor/pocketjs` is pinned to its branch.
+`vendor/pocketjs` pins merged PocketJS main at `10aee589`. It includes the
+3DS companion transport, per-app recovery storage and the current HBL icon.
+**The build embeds independently drawn 24×24 and 48×48 icons**, using the
+same assets as Pocket Doc. Its runtime state lives under
+`/pocketjs/runtime/apps/22a222ca7b6bddb1/`; hold **L+R+START** to return to HBL.
+
+See [runtime upgrade validation](docs/RUNTIME-UPGRADE.md) for the checks and
+deployment receipt for this pin.
 
 ## License
 
