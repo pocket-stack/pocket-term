@@ -9,11 +9,11 @@ import { BTN } from "@pocketjs/framework/input";
 import { TermGrid } from "./grid.tsx";
 import { KB_H, Keyboard } from "./keyboard.tsx";
 import { connectTermOffload } from "./offload.ts";
-import { FONT_NAMES, FONT_LABELS, loadTerminalFont } from "./font.ts";
+import { FONT_NAMES, loadTerminalFont } from "./font.ts";
 import { TERM_LAYOUT, TABS_PER_PAGE, tabPage } from "../shared/layout.ts";
-import { createTermStore } from "./store.ts";
+import { createTermStore, type TermStore } from "./store.ts";
 import { createCursorStick } from "./stick.ts";
-import * as hot from "@pocketjs/framework/hot";
+import { TermSettings } from "./settings.tsx";
 
 const TAB_H = 26;
 const TAB_W = 72;
@@ -43,13 +43,17 @@ const DPAD_KEYS: readonly [number, "Up" | "Down" | "Left" | "Right"][] = [
 const DPAD_DELAY = 18;
 const DPAD_REPEAT = 4;
 
-export default function TermApp() {
+export default function TermApp(props: { store?: TermStore; initialSettings?: boolean } = {}) {
   loadTerminalFont();
   const { cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H } = TERM_LAYOUT;
-  const store = createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, connectTermOffload());
+  const store = props.store ?? createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, connectTermOffload());
   onCleanup(() => store.dispose());
   const [page, setPage] = createSignal(0);
   const [fontIndex, setFontIndex] = createSignal(0);
+  const [settingsOpen, setSettingsOpen] = createSignal(props.initialSettings ?? false);
+  const [scrollSpeed, setScrollSpeed] = createSignal(1);
+  const [preview, setPreview] = createSignal(true);
+  const pageCount = () => Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE));
   const visibleSessions = () => store.sessions().slice(page() * TABS_PER_PAGE, (page() + 1) * TABS_PER_PAGE);
   createEffect(() => {
     const at = store.sessions().findIndex(s => s.sid === store.activeSid());
@@ -63,15 +67,30 @@ export default function TermApp() {
 
   const dpadHeld = new Map<number, number>();
   const cursorStick = createCursorStick();
-  let scrollLabel: NodeMirror | undefined;
 
-  let prevButtons = 0;
+  let prevButtons = 0, stickVelocity = 0;
 
   onFrame((buttons) => {
+    // Preserve the stick's velocity on release instead of easing through
+    // only the final chase gap. Both touch and stick use the same fling.
+    const pad = analogY();
+    if (!settingsOpen() && Math.abs(pad) > 0.1) {
+      const step = Math.sign(pad) * (Math.abs(pad) - 0.1) / 0.9 * 18 * scrollSpeed();
+      if (step * stickVelocity < 0) store.history?.stop();
+      stickVelocity = step * 60; store.history?.nudge(step);
+    } else if (stickVelocity) {
+      if (!settingsOpen()) { store.history?.beginDrag(); store.history?.endDrag(stickVelocity); }
+      stickVelocity = 0;
+    }
     store.frame();
 
     const pressed = buttons & ~prevButtons;
     prevButtons = buttons;
+    if (settingsOpen()) {
+      cursorStick.reset(); dpadHeld.clear();
+      if (pressed & BTN.CROSS) setSettingsOpen(false);
+      return;
+    }
     setCtrlHeld((buttons & BTN.ZL) !== 0);
 
     let sentThisFrame = false;
@@ -108,10 +127,6 @@ export default function TermApp() {
     if (pressed & BTN.LTRIGGER) store.attachSibling(-1);
     if (pressed & BTN.RTRIGGER) store.attachSibling(1);
 
-    // Scrolling changes a local camera, without queuing PTY commands.
-    const pad = analogY();
-    if (Math.abs(pad) > 0.08) store.history?.nudge(pad * 9);
-    hot.text(scrollLabel, store.conn() !== "live" ? "offline · cached" : store.history?.manifest()?.alternate ? "editor · cursor nub" : store.scrollback() > 0 ? `history · ${store.scrollback()} lines` : "live · flick to scroll");
   });
 
   // Session tab strip on the touch screen: tap a tab to attach, hold one to
@@ -119,10 +134,8 @@ export default function TermApp() {
   let tabsNode: NodeMirror | undefined;
   let pagesNode: NodeMirror | undefined;
   createGesture({ surface: "auxiliary", region: { node: () => pagesNode }, onTap: contact => {
-    const count = Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE));
-    if (contact.x < 90) setPage(p => (p - 1 + count) % count);
-    else if (contact.x > 230) setPage(p => (p + 1) % count);
-    else { const next = (fontIndex() + 1) % FONT_NAMES.length; setFontIndex(next); loadTerminalFont(FONT_NAMES[next]); }
+    const count = pageCount();
+    setPage(p => (p + (contact.y < 68 ? -1 : 1) + count) % count);
   } });
   /** The session the close bar is armed for, and how far the bar has slid. */
   const [closingSid, setClosingSid] = createSignal(-1);
@@ -187,8 +200,8 @@ export default function TermApp() {
   const [touching, setTouching] = createSignal(false);
   createGesture({ surface: "auxiliary", region: { node: () => touchpad }, axis: "y", panSlop: 2,
     onDown() { if (closingSid() < 0) { setTouching(true); store.history?.beginDrag(); } },
-    onPanMove(c) { if (closingSid() < 0) store.history?.drag(-c.fdy * 2); },
-    onPanEnd(c) { setTouching(false); store.history?.endDrag(-c.vy * 2); },
+    onPanMove(c) { if (closingSid() < 0) store.history?.drag(-c.fdy * 3 * scrollSpeed()); },
+    onPanEnd(c) { setTouching(false); store.history?.endDrag(-c.vy * 3 * scrollSpeed()); },
     onTap() { setTouching(false); store.history?.endDrag(0); },
     onCancel() { setTouching(false); store.history?.stop(); },
   });
@@ -247,25 +260,21 @@ export default function TermApp() {
             </View>
           </View>
 
-          <View ref={node => pagesNode = node} class="absolute left-0 right-0 top-[30] h-[24] flex-row items-center justify-between">
-            <Text class="text-xs text-[#5d708c]">{`← ${page() + 1}/${Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE))}`}</Text>
-            <Text class="text-xs text-[#9fb6d8]">{`${FONT_LABELS[FONT_NAMES[fontIndex()]]} · 80×24`}</Text>
-            <Text class="text-xs text-[#5d708c]">tabs →</Text>
+          <View ref={touchpad} debugName="HistoryTouchpad" class="absolute left-[4] top-[30] h-[76] rounded-[4] border border-[#273345] overflow-hidden" style={{ width: pageCount() > 1 ? 260 : 312, bgColor: touching() ? 0xff30251b : 0xff1b1611 }}>
+            <View class="absolute left-[110] top-[34] w-[40] h-[1] bg-[#35475b]" />
+            <View class="absolute left-[118] top-[40] w-[24] h-[1] bg-[#35475b]" />
+            <View class={store.conn() === "live" ? "absolute right-[7] bottom-[7] w-[3] h-[3] rounded-[2] bg-[#42765a]" : "absolute right-[7] bottom-[7] w-[3] h-[3] rounded-[2] bg-[#bb8041]"} />
           </View>
-          <View ref={touchpad} debugName="HistoryTouchpad" class="absolute left-[4] top-[56] w-[191] h-[50] rounded-[4] border border-[#34465c] overflow-hidden" style={{ bgColor: touching() ? 0xff3d2c1e : 0xff211a14 }}>
-            <Text ref={scrollLabel} class="absolute left-[7] top-[5] w-[177] h-[14] text-xs text-[#9fb6d8]">live · flick to scroll</Text>
-            <View class="absolute left-[69] top-[29] w-[50] h-[1] bg-[#43566b]" />
-            <View class="absolute left-[77] top-[34] w-[34] h-[1] bg-[#43566b]" />
-            <Text class="absolute left-[7] bottom-[3] text-xs text-[#5d708c]">{store.status().slice(0, 27)}</Text>
-          </View>
-          <View class="absolute left-[202] top-[56] right-[3] h-[50] overflow-hidden">
-            <Text class="absolute left-0 top-0 text-xs text-[#8ba5c4]">right nub: arrows</Text>
-            <Text class="absolute left-0 top-[16] text-xs text-[#5d708c]">L/R: tabs · ZL: ctrl</Text>
-            <Text class="absolute left-0 top-[32] text-xs text-[#5d708c]">SELECT: new</Text>
-          </View>
+          <Show when={pageCount() > 1}>
+            <View ref={node => pagesNode = node} class="absolute left-[270] top-[30] w-[46] h-[76] rounded-[4] bg-[#141b24]">
+              <Text class="absolute left-[16] top-[7] text-lg text-[#9fb6d8]">‹</Text>
+              <Text class="absolute left-[16] top-[43] text-lg text-[#9fb6d8]">›</Text>
+            </View>
+          </Show>
 
           <Keyboard
             top={KB_TOP}
+            onSettings={() => { store.history?.stop(); setSettingsOpen(true); }}
             onChar={(ch) => {
               store.sendText(ch);
               setCtrlArmed(false);
@@ -298,6 +307,11 @@ export default function TermApp() {
             </View>
           </Show>
 
+          <Show when={settingsOpen()}>
+            <TermSettings font={fontIndex()} speed={scrollSpeed()} preview={preview()} status={store.conn() === "live" ? store.hostName() : "Waiting for paired Mac"}
+              onFont={n => { setFontIndex(n); loadTerminalFont(FONT_NAMES[n]); }}
+              onSpeed={setScrollSpeed} onPreview={on => { setPreview(on); store.setPreview(on); }} onClose={() => setSettingsOpen(false)} />
+          </Show>
         </View>
       </AuxiliarySurface>
     </>

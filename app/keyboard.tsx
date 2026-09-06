@@ -4,12 +4,12 @@
 // a fixed grid of 26 px rows on a 32 px column unit (10 units = the 320 px
 // panel), hit by one auxiliary-surface gesture on the keyboard root.
 //
-// Row 0 is the terminal action strip (Esc/Tab/Ctrl/^C/arrows/paging); rows
+// Row 0 is the terminal action strip (Esc/Tab/Ctrl/Alt/paging/settings); rows
 // 1..4 are the character layers. Shift and Ctrl are one-shot: they arm, the
 // next key consumes them — the classic touch-phone convention, and the only
 // one that works with a single resistive contact.
 
-import { createSignal, For } from "solid-js";
+import { createMemo, createSignal, For } from "solid-js";
 import { Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
@@ -25,7 +25,8 @@ export type KeyAction =
   | { ch: string; ctrl?: boolean }
   | { key: KeyName }
   | { layer: LayerName }
-  | { mod: "shift" | "ctrl" | "alt" };
+  | { mod: "shift" | "ctrl" | "alt" }
+  | { settings: true };
 
 export type LayerName = "lower" | "upper" | "sym" | "sym2" | "fn";
 
@@ -54,16 +55,11 @@ const layer = (label: string, target: LayerName, w = 1): KeyDef => ({
 /** The action strip is layer-independent. ^C rides the key path with the
  *  ctrl flag so the daemon encodes the control byte. */
 const ACTION_ROW: KeyDef[] = [
-  key("esc", "Escape"),
-  key("tab", "Tab"),
-  { label: "ctl", w: 1, act: { mod: "ctrl" }, dark: true },
-  { label: "alt", w: 1, act: { mod: "alt" }, dark: true },
-  key("←", "Left"),
-  key("↓", "Down"),
-  key("↑", "Up"),
-  key("→", "Right"),
-  key("pgu", "PageUp"),
-  key("pgd", "PageDown"),
+  key("esc", "Escape", 1.25), key("tab", "Tab", 1.25),
+  { label: "ctl", w: 1.25, act: { mod: "ctrl" }, dark: true },
+  { label: "alt", w: 1.25, act: { mod: "alt" }, dark: true },
+  key("pgu", "PageUp", 1.25), key("pgd", "PageDown", 1.25),
+  { label: "settings", w: 2.5, act: { settings: true }, dark: true },
 ];
 
 function charRow(chars: string): KeyDef[] {
@@ -130,6 +126,7 @@ export function keyAt(layerName: LayerName, x: number, y: number): KeyHit | null
 
 export interface KeyboardProps {
   top: number;
+  onSettings: () => void;
   onChar: (ch: string) => void;
   /** `name` is a KeyName, or a single character when ctrl is held. */
   onKey: (name: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
@@ -149,7 +146,8 @@ export function Keyboard(props: KeyboardProps) {
     setPressed(`${hit.row}:${hit.index}`);
     releaseTimer = 4;
     const act = hit.def.act;
-    if ("ch" in act) {
+    if ("settings" in act) { props.onSettings();
+    } else if ("ch" in act) {
       if (act.ctrl || props.ctrlArmed() || altArmed()) {
         props.onKey(act.ch, !!act.ctrl || props.ctrlArmed(), altArmed(), false);
         setAltArmed(false);
@@ -261,9 +259,9 @@ function KeyboardRow(props: {
           defs()
             .slice(0, index())
             .reduce((x, d) => x + d.w * UNIT, 0);
-        const isPressed = () => props.pressed === `${props.row}:${index()}`;
+        const isPressed = createMemo(() => props.pressed === `${props.row}:${index()}`);
         const isArmedCtrl = () => "mod" in def.act && (def.act.mod === "ctrl" && props.ctrlArmed || def.act.mod === "alt" && props.altArmed);
-        const down = () => isPressed() || isArmedCtrl();
+        const down = createMemo(() => isPressed() || isArmedCtrl());
         return (
           // The socket: a dark recess the cap sits in. Unpressed, the cap
           // covers all but the bottom lip, and that sliver of shadow is what

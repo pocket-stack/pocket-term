@@ -87,9 +87,15 @@ test("local history glides while IO is delayed; cached reading survives disconne
   const frame = (reply = true) => { h.frame(); runFrameHooks(0); if (reply) for (const r of [...t.requests]) if (!r.answered && !r.cancelled) t.answer(r); };
   for (let i = 0; i < 30; i++) frame();
   expect(h.stats().ready).toBeGreaterThan(20);
+  const plans = h.stats().plans;
+  for (let i = 0; i < 60; i++) frame(false);
+  expect(h.stats().plans).toBe(plans); // idle frames do not rebuild demand maps
   h.beginDrag(); h.drag(-100); h.endDrag(-120);
   const before = h.scroller.offset(); for (let i = 0; i < 10; i++) frame(false);
   expect(h.scroller.offset()).toBeLessThan(before); // no network reply needed to move
+  const positions: number[] = [];
+  for (let i = 0; i < 8; i++) { frame(false); positions.push(h.translation(0)); }
+  expect(new Set(positions.map(p => Math.abs(p) % 10)).size).toBeGreaterThan(2); // sub-row paint positions
   h.stop(); const anchored = h.first(); expect(h.row(anchored)).toBeDefined();
   h.adopt(1, { ...m, end: 110 }); expect(h.first()).toBe(anchored);
   h.adopt(1, { ...m, first: 10, end: 110 }); expect(h.first()).toBe(anchored);

@@ -21,7 +21,10 @@ test("all keyboard layers cover the touch panel, with reachable function and mod
   }
   expect(keyAt("fn", 1, 39)!.def.act).toEqual({ key: "F1" });
   expect(keyAt("fn", 65, 91)!.def.act).toEqual({ key: "F12" });
-  expect(keyAt("lower", 97, 13)!.def.act).toEqual({ mod: "alt" });
+  expect(keyAt("lower", 137, 13)!.def.act).toEqual({ mod: "alt" });
+  expect(keyAt("lower", 280, 13)!.def.act).toEqual({ settings: true });
+  const strip = Array.from({ length: 320 }, (_, x) => keyAt("lower", x, 13)!.def.act);
+  expect(strip.some(act => "key" in act && ["Up", "Down", "Left", "Right"].includes(act.key))).toBe(false);
 });
 
 test("box and block ink reaches adjacent cells without font-metric gaps", () => {

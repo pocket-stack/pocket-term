@@ -15,7 +15,7 @@
 
 /** The pocket-svc app id (manifest `companions`, PKNT handshake, beacon). */
 export const TERM_APP = "term";
-export const TERM_PROTO = 4;
+export const TERM_PROTO = 5;
 
 /** Keep every emitted line comfortably under SVC_POLL_BUF. */
 export const LINE_BUDGET = 6144;
@@ -170,6 +170,8 @@ export type HostLine =
       more?: 1;
       rows: RowUpdate[];
       cur?: Cursor;
+      /** Input accepted before this snapshot; echo confirmation also requires matching cells. */
+      ack?: number;
       /** Lines currently scrolled back into history (0 = live bottom). */
       sb?: number;
       history?: import("./history.ts").HistoryManifest;

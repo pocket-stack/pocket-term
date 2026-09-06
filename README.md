@@ -3,7 +3,8 @@
 Pocket Term controls **macOS PTY sessions from a Nintendo 3DS**. The top
 screen displays **80 columns × 24 rows**, using a **5px monospace advance
 and 10px row height** across its entire 400×240 display. The touch screen
-contains session tabs, a scroll touchpad, connection status and the keyboard.
+contains session tabs, a scroll touchpad and the keyboard. Fonts, input
+preview and scroll speed are selected in its settings panel.
 
 <img src="docs/terminal-80x24.png" width="400" alt="Pocket Term's native 3DS renderer: 80 by 24 terminal grid, paged sessions and touch keyboard" />
 
@@ -34,8 +35,9 @@ node-pty on macOS. The supervisor starts both processes and closes their
 children when it exits.
 
 **Each input command carries a monotonically increasing id.** A lost reply
-can be retried with the same id. The terminal worker consumes it once and
-retains each output fragment until the guest acknowledges it. A changed
+can be retried with the same id. The terminal worker consumes it once. Input batches and screen pulls use
+independent offload requests; each output fragment is retained until the
+guest acknowledges it. A changed
 worker or replica epoch discards uncertain input and resets the grid.
 Screen output coalesces while delivery is pending; terminal bytes continue
 to feed libghostty on the Mac. Completed grid updates commit together.
@@ -60,7 +62,7 @@ exposed on the LAN. The 3DS connects through its app-specific pairing key.
 | D-pad | Terminal arrows, with repeat |
 | Circle pad / touchpad flick | Local inertial scrollback |
 | Right nub (supported hardware) | Repeating editor cursor arrows |
-| Touch font name | Switch Spleentt / Spleen / Fusion Pixel |
+| Keyboard settings key | Fonts, provisional typing preview and scroll speed |
 | START | Ctrl-C |
 | SELECT / touch + | New session |
 | L / R | Previous / next session |
@@ -78,7 +80,7 @@ never interpreted as an implicit paste.
 
 The companion supports **32 sessions**, **8 offload replicas**, and
 **2,000 scrollback rows per session**. Each guest queues at most 64 commands
-and has one exchange in flight. Paste is bounded to 8,192 UTF-16 code units;
+with one input batch and one screen pull in flight. Paste is bounded to 8,192 UTF-16 code units;
 a batch that does not fit is rejected before sending any of it. The Mac
 retains at most 256 Ki characters of output per replica. Inactive replicas
 expire after 30 minutes. At capacity, a replica idle for 15 seconds may be
@@ -136,7 +138,8 @@ provider and capability worker against a simulated native socket endpoint,
 then exercises the real Node PTYs and libghostty. The native capture fixture
 uses `pocketterm-qa.3dsx`; it never replaces the production launcher.
 
-See [upgrade validation](docs/OFFLOAD-UPGRADE.md) for results and the current
+See [input responsiveness](docs/RESPONSIVENESS.md) for the latency mechanism
+and prediction limits, and [upgrade validation](docs/OFFLOAD-UPGRADE.md) for results and the current
 physical acceptance boundary. [Earlier runtime validation](docs/RUNTIME-UPGRADE.md)
 records the previous 57×17 svc build, not this upgrade.
 

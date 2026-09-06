@@ -85,14 +85,28 @@ export function TermGrid(props: GridProps) {
   const first = () => store.history?.first() ?? 0;
   // Rebase before large absolute row ids lose pixel precision in native floats.
   const origin = createMemo(() => Math.floor(first() / 512) * 512);
-  let canvas: NodeMirror | undefined;
-  onFrame(() => hot.prop(canvas, "translateY", store.history?.translation(origin()) ?? 0));
+  let canvas: NodeMirror | undefined, previewNode: NodeMirror | undefined, previewText: NodeMirror | undefined, previewLine: NodeMirror | undefined;
+  const rowNodes: (NodeMirror | undefined)[] = [];
+  let placedFirst = -1;
+  onFrame(() => {
+    hot.prop(canvas, "translateY", store.history?.translation(origin()) ?? 0);
+    if (placedFirst !== first()) {
+      placedFirst = first();
+      for (let slot = 0; slot < m.rows + 2; slot++) hot.prop(rowNodes[slot], "translateY", m.statusH + ((store.history ? slotRow(slot, first(), m.rows + 2) : slot) - origin()) * m.cellH);
+    }
+    const p = store.scrollback() === 0 ? store.preview()?.text : undefined;
+    hot.prop(previewNode, "opacity", p ? 1 : 0);
+    if (p) {
+      hot.prop(previewNode, "translateX", p.x * m.cellW); hot.prop(previewNode, "translateY", m.statusH + p.y * m.cellH);
+      hot.text(previewText, p.value); hot.prop(previewLine, "scaleX", p.value.length * m.cellW);
+    }
+  });
 
   const rowCanvas = <View ref={canvas} debugName="TerminalRows" class="absolute left-0 right-0 top-0" style={{ height: m.rows * m.cellH }}>
         {Array.from({ length: m.rows + 2 }, (_, slot) => {
           const row = createMemo(() => store.history ? slotRow(slot, first(), m.rows + 2) : slot);
           const runs = () => store.history ? store.history.row(row()) : slot < m.rows ? store.row(slot)() : [];
-          return <View debugName="TerminalRow" class="absolute left-0 right-0" style={{ insetT: m.statusH + (row() - origin()) * m.cellH, height: m.cellH }}>
+          return <View ref={node => rowNodes[slot] = node} debugName="TerminalRow" class="absolute left-0 right-0 top-0" style={{ height: m.cellH }}>
             <Show when={runs() !== undefined} fallback={<View debugName="HistorySkeleton" class="absolute left-[5] top-[3] h-[4]" style={{ width: 65 + row() % 7 * 35, bgColor: store.history?.rowError(row()) ? 0xff35416b : 0xff30251d }} />}>
           <For each={runs()}>
             {(run: Run) => (
@@ -175,8 +189,8 @@ export function TermGrid(props: GridProps) {
         <View
           class="absolute"
           style={{
-            insetL: cursorLeft(),
-            insetT: cursorTop(),
+            translateX: cursorLeft(),
+            translateY: cursorTop(),
             width: m.cellW,
             height: m.cellH,
             // Translucent block under the glyphs (rows paint after this).
@@ -186,6 +200,10 @@ export function TermGrid(props: GridProps) {
       </Show>
 
       {rowCanvas}
+      <View ref={previewNode} debugName="TypingPreview" class="absolute left-0 top-0 w-[400] h-[10] opacity-0">
+        <Text ref={previewText} class="absolute left-0 top-0 w-[400] h-[10] font-mono text-xs text-[#d8dee9]" style={{ lineHeight: m.cellH, tracking: m.track }} />
+        <View ref={previewLine} class="absolute left-0 bottom-0 w-[1] h-[1] origin-left bg-[#52779d]" />
+      </View>
 
       <Show when={store.conn() !== "live" && !store.history?.manifest()}>
         <View class="absolute left-0 right-0 top-0 bottom-0 flex-col items-center justify-center gap-[6] bg-[#10151cf0]">

@@ -112,10 +112,9 @@ const FLUSH_COALESCE_MS = 2;
  *  cursor that moved because a replica attached. */
 const FLUSH_IDLE_MS = 100;
 
-/** Base64 per atlas chunk. The device's svc transport discards any ctrl
- *  frame over SVC_POLL_BUF (8192) bytes outright, so a chunk plus its JSON
- *  wrapper has to stay well inside the line budget. */
-const ATLAS_CHUNK = 5600;
+/** Keep one atlas piece within a typical offload reply so changed rows can
+ * take the next output turn instead of waiting through a large atlas line. */
+const ATLAS_CHUNK = 1536;
 
 class Conn {
   readonly socket: Socket;
@@ -172,7 +171,7 @@ class Conn {
         ...(full ? { full: 1 as const } : {}),
         ...(last ? {} : { more: 1 as const }),
         rows: chunks[i],
-        ...(last ? { cur: cursor, sb: this.scrollback, history: hub.sessions.get(this.attachedSid)?.history.manifest() } : {}),
+        ...(last ? { cur: cursor, ack: this.mailbox?.ack, sb: this.scrollback, history: hub.sessions.get(this.attachedSid)?.history.manifest() } : {}),
       });
     }
   }
@@ -418,7 +417,6 @@ function snapshot(conn: Conn) {
 
 function flush(conn: Conn) {
   if (conn.mailbox?.busy) return;
-  pumpAtlasSend(conn);
   const session = hub.sessions.get(conn.attachedSid);
   if (!session || !conn.sawClientHello) return;
   const rows = viewRows(session, conn);
@@ -432,7 +430,7 @@ function flush(conn: Conn) {
   }
   const cursor = cursorFor(session, conn);
   const cursorKey = JSON.stringify([cursor, conn.scrollback, session.history.manifest()]);
-  if (updates.length === 0 && cursorKey === conn.lastCursor) return;
+  if (updates.length === 0 && cursorKey === conn.lastCursor) { pumpAtlasSend(conn); return; }
   conn.lastCursor = cursorKey;
   conn.sendGrid(updates, cursor, false);
 }
@@ -798,7 +796,7 @@ console.log(`[term] shell ${options.shell}, host name "${options.name}"`);
 const epoch = randomUUID(), token = randomBytes(32).toString("hex");
 const replicas = new Map<string, Conn>();
 const broker = createHttpServer(async (request, response) => {
-  if (request.method !== "POST" || !["/exchange", "/history"].includes(request.url ?? "") || request.headers.authorization !== `Bearer ${token}`) {
+  if (request.method !== "POST" || !["/exchange", "/history", "/input"].includes(request.url ?? "") || request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(403).end(); return;
   }
   try {
@@ -843,7 +841,9 @@ const broker = createHttpServer(async (request, response) => {
       conn = new Conn({ destroy() {}, writableLength: 0 } as unknown as Socket);
       conn.mailbox = new Mailbox(); replicas.set(input.replica, conn); hub.conns.add(conn);
     }
-    const reply = conn.mailbox!.exchange(input, `${epoch}-${conn.mailbox!.identity}`, line => handleLine(conn!, line));
+    const reply = request.url === "/input"
+      ? conn.mailbox!.input(input as unknown as import("../shared/exchange.ts").InputRequest, `${epoch}-${conn.mailbox!.identity}`, line => handleLine(conn!, line))
+      : conn.mailbox!.exchange(input, `${epoch}-${conn.mailbox!.identity}`, line => handleLine(conn!, line));
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(reply));
     if (!conn.mailbox!.busy) scheduleFlush();

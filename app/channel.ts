@@ -9,7 +9,8 @@ export interface TermChannel {
    *  carries the companion's terminal state and, on a desktop host, the
    *  window's own input — see HostInputLine. */
   poll(): (HostLine | HostInputLine)[];
-  send(line: ClientLine): void;
+  send(line: ClientLine): number | void;
+  inputPending?(): boolean;
   sendBatch?(lines: ClientLine[]): boolean;
   status?(): string;
   dispose?(): void;

@@ -1,15 +1,45 @@
 # Paired terminal upgrade validation
 
-## Cached scrollback revision
+## Responsive input and scrolling revision
 
-**The current revision adds local inertial scrollback, a touchpad, right-nub
+**Protocol 5 sends input independently of output delivery and batches ordered
+keys.** Local scroll demand is planned in eight-row buckets, row movement uses
+pixel translations, and releasing the stick carries its velocity into a fling.
+The quiet lower screen has a settings key for fonts, preview and scroll speed.
+Conservative provisional echo learns from confirmed application output.
+The mechanism and simulated baseline comparison are in
+[RESPONSIVENESS.md](RESPONSIVENESS.md).
+
+| Check | Result |
+| --- | --- |
+| Guest and host types; unit suite | Passed: 60 tests, 1,441 assertions |
+| Actual provider and macOS PTYs | Passed: 2 integrations, including batched Vim/Nano edits and lost-reply retries |
+| All three font atlases | Reproduction matched |
+| Production launcher and Mac mirror | Built; app key path present, capture marker absent |
+| Native settings | Inspected; all three fonts and preview/speed controls fit |
+| Native provisional echo | Inspected; pending third character and underline appear before authoritative output |
+| Native inertial motion | Six consecutive frames inspected; unchanged pixels move 12, 11 and 10px in successive frames |
+| Physical deployment and interaction | Pending; ftpd refused the connection when the new package was ready |
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| pocketterm-main.3dsx | 2,024,192 | `b349e7e97590e4d97bc43e53da9f1735fd979f65ce8dd5e7970bbda7b244355d` |
+| pocketterm-main.pocket | 721,736 | `a486a182e912b9513b914ecaecf2e5c69b1c1d889c08db3de272e8a69aa47494` |
+
+The new launcher and companion must be upgraded together. The existing
+protocol-4 worker and user PTYs have been left running while awaiting FTP.
+The native fixtures establish rendering behavior, not physical frame rate.
+
+## Cached scrollback baseline
+
+**This preceding revision added local inertial scrollback, a touchpad, right-nub
 cursor arrows and three pixel fonts.** The user confirmed the preceding
 paired-terminal build was usable, then identified slow scrollback and blurry
 text. The results below distinguish the new revision from that physical
 baseline. The synchronization mechanism is documented in
 [SCROLLBACK.md](SCROLLBACK.md).
 
-| Current check | Result |
+| Baseline check | Result |
 | --- | --- |
 | Guest and host types; unit suite | Passed: 50 tests, 1,432 assertions |
 | Native Ghostty history and real provider/PTYS | Passed: 2 integrations, including pruning, same-chunk clear/refill, palette invalidation, reconnect and saved Vim/Nano cursor edits |
@@ -20,7 +50,7 @@ baseline. The synchronization mechanism is documented in
 | Native delayed-history frame 180 | Inspected: translated rows retain identity, missing rows show skeletons |
 | Native settled-history frame 360 | Inspected: missing rows filled, consecutive row identities and the reading anchor preserved |
 | Physical FTP deployment | Passed: production launcher and pairing key read back byte-identically on 2026-09-06 at 21:46 UTC |
-| Physical revision acceptance | Pending fresh launch and stick/touch/font testing |
+| Physical revision acceptance | User confirmed Nano nub control worked; reported high latency, slow motion and noisy lower-screen controls |
 
 [Native font/layout](terminal-80x24.png), [history while loading](history-loading.png),
 [history after filling](history-settled.png), and
@@ -29,7 +59,7 @@ The font study compares the previous antialiased face with Spleen, Spleentt and
 Fusion; the native fixture verifies the selected face through the 3DS renderer.
 These deterministic emulator frames do not establish physical frame rate.
 
-| Current artifact | Bytes | SHA-256 |
+| Baseline artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
 | pocketterm-main.3dsx | 1,937,872 | `6f65c3a374681c1151175fc088e00ea8727df70c060e46a315f3a7d70f377c8f` |
 | pocketterm-main.pocket | 635,416 | `fc3180add555cc7a5cf7136162a49f21007807650d2c411a36853cc82c1502c5` |
@@ -38,13 +68,13 @@ These deterministic emulator frames do not establish physical frame rate.
 The previous launcher was backed up and verified at
 `/pocketjs/runtime/native-backups/pocketterm-main-9f4a08ce175b4af4.3dsx`.
 The FTP receipt is `.pocket/last-deploy.json`; the installed hash matches
-the current artifact above.
+the baseline artifact above.
 
-The updated Mac companion is running and waiting for the console to leave
-ftpd. The previous provider was stopped while its durable terminal worker
+After this baseline deployment, the Mac companion waited for the console
+to leave ftpd. The previous provider was stopped while its durable terminal worker
 and both existing PTYs were preserved for their original desktop mirrors.
 Those sessions are not migrated into the new worker. Its new sessions use
-terminal protocol 4. The current trace is `.pocket/cache-daemon.log`;
+terminal protocol 4. The baseline trace is `.pocket/cache-daemon.log`;
 preservation details are in `.pocket/retired-protocol3-daemon.json`.
 
 ## Initial paired-terminal baseline

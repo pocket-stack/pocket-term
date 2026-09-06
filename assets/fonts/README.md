@@ -14,7 +14,7 @@ with `bun scripts/font.ts --check`.
 retain their original 5×8 pixels with padding inside a 5×10 cell. Fusion
 uses its original 10px height; its ASCII advances 5px and CJK advances 10px.
 There is no resampling or antialiasing of these bitmap glyphs. Spleentt is
-the default; tap the font name on the lower screen to compare the faces.
+the default; open settings on the lower screen to compare the faces.
 
 The generated atlas is a product composition: ASCII comes from the selected
 face, other narrow symbols prefer Fusion, and terminal box/block glyphs are

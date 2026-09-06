@@ -95,6 +95,12 @@ test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT
         }
         return reply;
       }
+      async input(lines: ClientLine[], loseReply = false) {
+        const request = { replica: this.id, epoch: this.epoch, commands: lines.map(line => ({ id: ++this.command, line })) };
+        const reply = await capability("term.input", request);
+        assert.equal(reply.error, undefined); assert.equal(reply.ack, this.command);
+        if (loseReply) { transport!.destroy(); assert.deepEqual(await capability("term.input", request), reply); }
+      }
       text() { return this.grid.map(row => row.map(run => run[1]).join("")).join("\n"); }
       async until(predicate: () => boolean) {
         const deadline = Date.now() + 6000;
@@ -150,8 +156,8 @@ test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT
       await reconnected.exchange({ t: "ch", s: editor === "vim" ? "vim -Nu NONE -n vim.txt\r" : "nano nano.txt\r" });
       await reconnected.until(() => !!reconnected.history?.alternate && reconnected.text().includes("beta"));
       const stick = createCursorStick();
-      await reconnected.exchange({ t: "key", k: stick.step(0, 0.9)! }); stick.step(0, 0);
-      await reconnected.exchange({ t: "key", k: stick.step(0.9, 0)! });
+      const down = stick.step(0, 0.9)!; stick.step(0, 0);
+      await reconnected.input([{ t: "key", k: down }, { t: "key", k: stick.step(0.9, 0)! }], true);
       await reconnected.exchange({ t: "ch", s: editor === "vim" ? "iX" : "X" });
       if (editor === "vim") {
         await reconnected.exchange({ t: "key", k: "Escape" }); await reconnected.exchange({ t: "ch", s: ":wq\r" });

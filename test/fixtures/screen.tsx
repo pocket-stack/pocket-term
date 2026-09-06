@@ -1,6 +1,8 @@
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { __setAnalog } from "../../vendor/pocketjs/framework/src/frame.ts";
 import { mount } from "@pocketjs/framework/solid";
+import { createTermStore } from "../../app/store.ts";
+import { connectTermOffload } from "../../app/offload.ts";
 import TermApp from "../../app/app.tsx";
 import { TERM_PROTO, type HostLine, type RowUpdate } from "../../shared/protocol.ts";
 const ruler = "1234567890".repeat(8);
@@ -28,8 +30,10 @@ const rows: RowUpdate[] = Array.from({ length: 24 }, (_, y) => [y, [0, y === 0 |
   "$ ",
 ][(y - 1) % 21]}`.padEnd(80, " ").slice(0, 80), y % 4 === 0 ? 0x81a2be : -1, y === 5 ? 0x243047 : -1]]);
 const sessions = Array.from({ length: 12 }, (_, n) => ({ sid: n + 1, title: `zsh #${n + 1}` }));
-export function mountFixture(historyMode = false) {
-const queue: string[] = []; let sequence = 0, ack = 0, held: any, gen = 0, ticks = 0;
+export function mountFixture(historyMode = false, settingsMode = false, previewMode = false) {
+const queue: string[] = []; let sequence = 0, ack = 0, held: any, gen = 0, ticks = 0, gridSeq = 0, typed = "";
+const fixtureRows = previewMode ? rows.map(r => r[0] === 12 ? [12, [0, "$ ", -1, -1]] as RowUpdate : r) : rows;
+const deferred: { at: number; line: HostLine }[] = [];
 const responses: { at: number; value: string }[] = [];
 function push(line: HostLine) {
   const text = JSON.stringify(line);
@@ -44,17 +48,23 @@ function push(line: HostLine) {
       const raw = JSON.stringify(row);
       responses.push({ at: ticks + 6 + input.row % 9, value: JSON.stringify({ id: request.id, payload: JSON.stringify({ epoch: input.epoch, row: input.row, part: input.part, parts: Math.ceil(raw.length / 600), data: raw.slice(input.part * 600, (input.part + 1) * 600) }) }) }); return true;
     }
-    if (input.epoch) {
-      if (held && input.received === sequence) held = undefined;
-      if (input.command && input.command.id > ack) {
-        ack = input.command.id;
-        const command = input.command.line;
+    if (request.method === "term.input") {
+      for (const item of input.commands ?? []) if (item.id > ack) {
+        ack = item.id; const command = item.line;
         if (command.t === "hello" || command.t === "attach") {
           push({ t: "hello", proto: TERM_PROTO, name: "evandeMacBook-Pro" });
           push({ t: "sessions", list: sessions, active: command.sid ?? 5 });
-          push({ t: "grid", sid: command.sid ?? 5, gen: ++gen, seq: 0, full: 1, rows, cur: [79, 23, 1], ...(historyMode ? { history: { epoch: "fixture-history", first: 0, end: 2000, alternate: false } } : {}) });
+          gridSeq = 0;
+          push({ t: "grid", sid: command.sid ?? 5, gen: ++gen, seq: gridSeq++, ack, full: 1, rows: fixtureRows, cur: previewMode ? [2, 12, 1] : [79, 23, 1], ...(historyMode ? { history: { epoch: "fixture-history", first: 0, end: 2000, alternate: false } } : {}) });
+        } else if (previewMode && command.t === "ch") {
+          typed += command.s;
+          deferred.push({ at: ticks + 8, line: { t: "grid", sid: 5, gen, seq: gridSeq++, ack, rows: [[12, [0, "$ " + typed, -1, -1]]], cur: [2 + typed.length, 12, 1] } });
         }
       }
+      responses.push({ at: ticks, value: JSON.stringify({ id: request.id, payload: JSON.stringify({ epoch: "fixture", ack }) }) }); return true;
+    }
+    if (input.epoch) {
+      if (held && input.received === sequence) held = undefined;
       if (!held && queue.length) { held = JSON.parse(queue.shift()!); sequence++; }
     }
     responses.push({ at: ticks, value: JSON.stringify({ id: request.id, payload: JSON.stringify({ epoch: "fixture", ack, sequence, ...held }) }) }); return true;
@@ -62,7 +72,13 @@ function push(line: HostLine) {
   take() { const at = responses.findIndex(r => r.at <= ticks); return at < 0 ? undefined : responses.splice(at, 1)[0].value; },
 };
 mount(() => {
-  onFrame(() => { ticks++; if (historyMode) __setAnalog((128 << 8) | (ticks >= 120 && ticks < 175 ? 16 : 128)); });
-  return <TermApp />;
+  const store = createTermStore({ cols: 80, rows: 24, cell: [5, 10], now: () => ticks * 1000 / 60 }, connectTermOffload());
+  onFrame(() => {
+    ticks++;
+    while (deferred[0] && deferred[0].at <= ticks) push(deferred.shift()!.line);
+    if (historyMode) __setAnalog((128 << 8) | (ticks >= 120 && ticks < 175 ? 16 : 128));
+    if (previewMode && [50, 70, 90].includes(ticks)) store.sendText("a");
+  });
+  return <TermApp store={store} initialSettings={settingsMode} />;
 });
 }

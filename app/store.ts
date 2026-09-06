@@ -1,7 +1,7 @@
 // Visible terminal replica. Completed grid generations commit atomically;
 // sequence gaps request a snapshot. PTYs and scrollback remain on the Mac.
 
-import { batch, createSignal, type Accessor } from "solid-js";
+import { batch, createMemo, createSignal, type Accessor } from "solid-js";
 import { getOps } from "@pocketjs/framework/host";
 import {
   DYNAMIC_SLOTS,
@@ -18,6 +18,7 @@ import {
 } from "../shared/protocol.ts";
 import type { TermChannel } from "./channel.ts";
 import { createTermHistory, type TermHistory } from "./history.ts";
+import { createTypingPrediction, type TypingPreview } from "./prediction.ts";
 
 export type ConnState = "no-svc" | "search" | "link" | "live";
 
@@ -61,6 +62,8 @@ function base64ToBytes(text: string): Uint8Array {
 
 export interface TermStore {
   history?: TermHistory;
+  preview: Accessor<TypingPreview | undefined>;
+  setPreview(on: boolean): void;
   conn: Accessor<ConnState>;
   hostName: Accessor<string>;
   sessions: Accessor<SessionInfo[]>;
@@ -93,10 +96,13 @@ export interface TermStoreOptions {
    *  advances and cell heights against it. */
   cell: [number, number];
   role?: Role;
+  /** Millisecond clock; deterministic native fixtures supply virtual time. */
+  now?: () => number;
 }
 
 export function createTermStore(options: TermStoreOptions, svc: TermChannel | null): TermStore {
   const { cols, rows, cell } = options;
+  const now = options.now ?? Date.now;
   const role: Role = options.role ?? "device";
   const [conn, setConn] = createSignal<ConnState>(svc === null ? "no-svc" : "search");
   const [hostName, setHostName] = createSignal("");
@@ -108,6 +114,9 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
   const [dynamicGlyphs, setDynamicGlyphs] = createSignal(0);
   const [status, setStatus] = createSignal("");
   const rowSignals = Array.from({ length: rows }, () => createSignal<Run[]>([]));
+  const [preview, setPreview] = createSignal<TypingPreview>();
+  const prediction = createTypingPrediction(y => rowSignals[y][0](), cursor, setPreview, cols, rows);
+  const displayedCursor = createMemo(() => preview()?.cursor ?? cursor());
   const coverage = new Map<number, Set<number>>();
   const [atlasVersion, setAtlasVersion] = createSignal(0);
   const history = svc?.historyIO ? createTermHistory(svc.historyIO, y => rowSignals[y][0], rows, cell[1], {
@@ -130,7 +139,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       if (svc.sendBatch) return svc.sendBatch(lines);
       lines.forEach(line => svc.send(line)); return true;
     },
-  }) : undefined;
+  }, () => !svc.inputPending?.()) : undefined;
 
   let wasOpen = false;
   let gen = -1;
@@ -157,7 +166,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
 
   const clearGrid = () => {
     for (const [, set] of rowSignals) set([]);
-    setCursor(null);
+    prediction.reset(); setCursor(null);
     setScrollback(0);
   };
 
@@ -230,34 +239,41 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     }
     if (line.more) return;
     batch(() => {
+      if (line.full || line.history && line.history.epoch !== history?.manifest()?.epoch) prediction.reset();
       for (const [y, runs] of staged!) rowSignals[y][1](runs);
       staged = undefined;
       if (line.cur) setCursor(line.cur);
       if (line.sb !== undefined) setScrollback(line.sb);
       if (line.history) history?.adopt(line.sid, line.history);
       sawGrid = true;
+      prediction.authoritative(line.ack, now());
       setConn("live");
     });
   };
 
   const sendText = (s: string) => {
     if (!wasOpen || activeSid() < 0) return;
-    if (s.length > 0 && s.length <= 256) { history?.goLive(); svc?.send({ t: "ch", s }); }
+    if (s.length > 0 && s.length <= 256) {
+      history?.goLive(); const line: ClientLine = { t: "ch", s }, id = svc?.send(line);
+      if (id && conn() === "live") prediction.input(line, id, now()); else prediction.reset();
+    }
   };
   const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean) => {
     if (!wasOpen || activeSid() < 0) return;
     history?.goLive();
-    svc?.send({
+    const line: ClientLine = {
       t: "key",
       k,
       ...(ctrl ? { ctrl: 1 as const } : {}),
       ...(alt ? { alt: 1 as const } : {}),
       ...(shift ? { shift: 1 as const } : {}),
-    });
+    };
+    const id = svc?.send(line);
+    if (id && conn() === "live") prediction.input(line, id, now()); else prediction.reset();
   };
   const paste = (text: string) => {
     if (!wasOpen || activeSid() < 0 || !text) return;
-    history?.goLive();
+    prediction.reset(); history?.goLive();
     if (text.length > 8192) { setStatus("Paste exceeds 8192 characters"); return; }
     const chunks: string[] = [];
     for (let at = 0; at < text.length;) {
@@ -271,6 +287,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     else lines.forEach(line => svc?.send(line));
   };
   const scroll = (lines: number) => {
+    prediction.reset();
     if (history) history.scroll(lines);
     else if (lines !== 0) svc?.send({ t: "scroll", d: lines });
   };
@@ -356,18 +373,18 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
 
   const attach = (sid: number) => {
     if (sid === activeSid()) return;
-    lastWanted = sid;
+    prediction.reset(); lastWanted = sid;
     svc?.send({ t: "attach", sid });
   };
 
   return {
-    history,
+    history, preview, setPreview: prediction.enabled,
     conn,
     hostName,
     sessions,
     activeSid,
     row: (y) => rowSignals[y][0],
-    cursor,
+    cursor: displayedCursor,
     scrollback: () => history?.manifest() ? history.back() : scrollback(),
     bell,
     dynamicGlyphs,
@@ -375,6 +392,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     dispose() { history?.dispose(); svc?.dispose?.(); atlasRx.clear(); },
     paste,
     frame() {
+      prediction.frame(now());
       if (svc === null) return;
       const transportStatus = svc.status?.() ?? "";
       if (transportStatus) setStatus(transportStatus);
@@ -403,7 +421,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       }
       wasOpen = open;
       if (!open) {
-        setConn("search");
+        prediction.reset(); setConn("search");
         history?.setOnline(false); history?.frame();
         return;
       }
@@ -415,10 +433,10 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     sendKey,
     scroll,
     newSession() {
-      svc?.send({ t: "new" });
+      prediction.reset(); svc?.send({ t: "new" });
     },
     kill(sid) {
-      if (sid >= 0) svc?.send({ t: "kill", sid });
+      prediction.reset(); if (sid >= 0) svc?.send({ t: "kill", sid });
     },
     attach,
     attachSibling(step) {

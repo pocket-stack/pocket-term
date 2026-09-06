@@ -7,7 +7,7 @@ device does not replay terminal escape sequences or mutate cached history.
 
 Pocket Doc's bounded resource views and Pocket Map's local scrolling inform
 the device implementation: `createScroller` advances the viewport, while a
-resource collection fetches only demanded rows. Both APIs come from the
+resource scheduler fetches only demanded rows. Both APIs come from the
 pinned PocketJS main. No unmerged framework code is copied into this app.
 
 ## Row identity and synchronization
@@ -44,7 +44,7 @@ from queries and titles. The native test confirms that a palette write
 recolors an existing historical cell even though its row count is unchanged.
 
 `term.history` is a read-only offload method, separate from the ordered
-`term.exchange` input stream. Every fragment repeats the epoch and row
+`term.input` stream and `term.exchange` screen delivery. Every fragment repeats the epoch and row
 identity. The server rejects expired ranges; the client checks fragment
 order, identity and size and fences late completions after cancellation.
 A missing row is a skeleton; an empty decoded row is a known blank.
@@ -56,7 +56,8 @@ edge rows. Crossing one row reassigns one slot. Sub-row motion writes a
 rounded pixel translation through PocketJS's hot property API, so neither
 network round trips nor rebuilding all rows drives motion. The render
 origin rebases every 512 absolute rows to keep native float coordinates
-small. Left-stick nudges and lower-screen drag/flick share this scroller.
+small. Demand replans only at eight-row bucket, manifest or direction changes.
+Left-stick release and lower-screen drag/flick share this scroller.
 Typing and cursor keys return to live; alternate screens disable history.
 
 | Budget | Limit |
@@ -93,7 +94,7 @@ static atlas and need no residency requests.
 
 ## Validation
 
-`bun run check` exercises the actual PocketJS resource runtime with delayed
+`bun run check` exercises the actual PocketJS resource scheduler with delayed
 replies, cancellation, offline reading, append/prune anchors and slot reuse.
 `bun run test:pty` covers native Ghostty history identities and reads through
 the actual Bun provider/Node PTY path, including reconnect and expiration.
@@ -106,6 +107,8 @@ injects analog input while history replies arrive with variable frame
 delays. Add `--frame=360` to capture after the visible rows have filled.
 `bun run visual` builds the static 80-column font/layout fixture.
 Neither fixture is a production launcher or evidence of physical frame rate.
+[Input and scrolling responsiveness](RESPONSIVENESS.md) documents the separate
+input path, planner changes, provisional echo and latency measurements.
 
 [Superlogical's public material](https://www.superlogical.com/) describes durable sessions, native history
 and reconnecting from other devices. It does not specify a reusable public
