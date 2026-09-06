@@ -1,5 +1,43 @@
 # Paired terminal upgrade validation
 
+## Cached scrollback revision
+
+**The current revision adds local inertial scrollback, a touchpad, right-nub
+cursor arrows and three pixel fonts.** The user confirmed the preceding
+paired-terminal build was usable, then identified slow scrollback and blurry
+text. The results below distinguish the new revision from that physical
+baseline. The synchronization mechanism is documented in
+[SCROLLBACK.md](SCROLLBACK.md).
+
+| Current check | Result |
+| --- | --- |
+| Guest and host types; unit suite | Passed: 50 tests, 1,427 assertions |
+| Native Ghostty history and real provider/PTYS | Passed: 2 integrations, including pruning, same-chunk clear/refill, reconnect and saved Vim/Nano cursor edits |
+| All three generated atlases | Reproduction matched; ASCII is 1:1 source bitmap coverage with 5px advance |
+| Production 3DS launcher/package | Built; expected app key path present and capture marker absent |
+| macOS mirror | Guest and release desktop host built |
+| Native font/layout frame | Inspected at 80×24; Spleentt, full-width last column and bottom touchpad |
+| Native delayed-history frame 180 | Inspected: translated rows retain identity, missing rows show skeletons |
+| Physical revision acceptance | Pending FTP availability and fresh stick/touch/font testing |
+
+[Native font/layout](terminal-80x24.png), [history while loading](history-loading.png),
+and [font comparison at 1:1](font-comparison.png) are retained as review artifacts.
+The font study compares the previous antialiased face with Spleen, Spleentt and
+Fusion; the native fixture verifies the selected face through the 3DS renderer.
+These deterministic emulator frames do not establish physical frame rate.
+
+| Current artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| pocketterm-main.3dsx | 1,937,872 | `6f65c3a374681c1151175fc088e00ea8727df70c060e46a315f3a7d70f377c8f` |
+| pocketterm-main.pocket | 635,416 | `fc3180add555cc7a5cf7136162a49f21007807650d2c411a36853cc82c1502c5` |
+
+Both companion and native launcher must be updated together: this revision
+uses terminal protocol 4. The running protocol-3 companion is still serving
+the accepted earlier build until deployment.
+
+## Initial paired-terminal baseline
+
+
 Validated on 2026-09-06 with PocketJS main `1c0735fa` and Pocket Doc's
 `edd774b` provider/resource architecture as the reference.
 
@@ -65,8 +103,9 @@ through their session-specific loopback listeners. The local trace is
 `.pocket/offload-daemon.log`; the acceptance snapshot is
 `.pocket/last-hardware-run.json` and contains command kinds, not typed text.
 
-Physical screen readability, shoulder switching and HBL return still need
-confirmation. Device telemetry recorded a cumulative maximum CPU frame of
+The user subsequently confirmed that this build was usable and reported
+scrolling and font quality as the main problems. HBL return was not separately
+confirmed in that report. Device telemetry recorded a cumulative maximum CPU frame of
 316,584 microseconds and 137 frames over 16ms in the first 4,827 frames;
 the connection/input evidence does not establish consistently smooth frames.
 The pinned offload host starts its embedded package without the legacy dev

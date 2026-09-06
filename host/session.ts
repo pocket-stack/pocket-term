@@ -3,6 +3,7 @@ import pty from "node-pty";
 import { GhosttyCore } from "@wterm/ghostty";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { SessionHistory } from "./history.ts";
 export interface SessionOptions { shell: string; cwd: string; login: boolean }
 export interface SessionEvents { output(): void; titles(): void; exit(sid: number): void }
 
@@ -30,6 +31,7 @@ export class Session {
   cols: number;
   rows: number;
   disposed = false;
+  readonly history = new SessionHistory();
 
   constructor(sid: number, cols: number, rows: number, options: SessionOptions, events: SessionEvents) {
     this.options = options; this.events = events;
@@ -73,7 +75,9 @@ export class Session {
       this.#backlog.push(data);
       return;
     }
+    this.history.observe(data);
     core.writeString(data);
+    this.history.update(core);
     // Programs ask the terminal questions — what are you, where is the
     // cursor, what colours do you use — and wait for the answer. The core
     // composes the replies; nobody but us can put them back on the PTY.
@@ -112,7 +116,9 @@ export class Session {
     if (this.cols === cols && this.rows === rows) return;
     this.cols = cols;
     this.rows = rows;
+    this.history.invalidate();
     this.core?.resize(cols, rows);
+    if (this.core) this.history.update(this.core);
     this.pty.resize(cols, rows);
     this.events.output();
   }
@@ -148,4 +154,3 @@ export class Session {
     }
   }
 }
-

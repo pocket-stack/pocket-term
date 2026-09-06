@@ -15,7 +15,7 @@
 
 /** The pocket-svc app id (manifest `companions`, PKNT handshake, beacon). */
 export const TERM_APP = "term";
-export const TERM_PROTO = 3;
+export const TERM_PROTO = 4;
 
 /** Keep every emitted line comfortably under SVC_POLL_BUF. */
 export const LINE_BUDGET = 6144;
@@ -122,6 +122,9 @@ export type ClientLine =
        *  what it was looking at across a reconnect); mirrors pass the one
        *  session they were opened for and follow nothing else. */
       want?: number;
+      /** Scroll position stays on this replica; historical rows use a
+       * separate reproducible read capability. */
+      history?: 1;
     }
   | { t: "new" }
   | { t: "kill"; sid: number }
@@ -130,6 +133,7 @@ export type ClientLine =
   | { t: "paste"; s: string; phase: "start" | "more" | "end" | "single" }
   | { t: "key"; k: string; ctrl?: 1; alt?: 1; shift?: 1 }
   | { t: "scroll"; d: number }
+  | { t: "glyphs"; one: string; two: string; reset?: 1; more?: 1 }
   | { t: "resync" };
 
 /** host -> device */
@@ -168,6 +172,7 @@ export type HostLine =
       cur?: Cursor;
       /** Lines currently scrolled back into history (0 = live bottom). */
       sb?: number;
+      history?: import("./history.ts").HistoryManifest;
     }
   | { t: "exit"; sid: number }
   | { t: "bell"; sid: number };

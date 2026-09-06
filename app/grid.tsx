@@ -10,8 +10,11 @@
 // advances the companion pinned to the grid, so mixed CJK and ASCII lines
 // stay on their columns without the app measuring anything.
 
-import { For, Show } from "solid-js";
-import { Text, View } from "@pocketjs/framework/components";
+import { createMemo, For, Show } from "solid-js";
+import { Text, View, type NodeMirror } from "@pocketjs/framework/components";
+import { onFrame } from "@pocketjs/framework/lifecycle";
+import * as hot from "@pocketjs/framework/hot";
+import { slotRow } from "../shared/history.ts";
 import { getOps } from "@pocketjs/framework/host";
 import { THEME_CURSOR, THEME_FG, isDynamicSlot, runColumns, type Run } from "../shared/protocol.ts";
 import { rgbToAbgr, type TermStore } from "./store.ts";
@@ -78,7 +81,62 @@ export function TermGrid(props: GridProps) {
   const hostLeft = STATUS_PAD + Math.ceil(getOps().measureText(props.title, STATUS_BOLD_SLOT)) + STATUS_GAP;
   const cursorLeft = () => (store.cursor()?.[0] ?? 0) * m.cellW;
   const cursorTop = () => m.statusH + (store.cursor()?.[1] ?? 0) * m.cellH;
-  const cursorOn = () => store.cursor()?.[2] === 1 && store.conn() === "live";
+  const cursorOn = () => store.cursor()?.[2] === 1 && store.conn() === "live" && store.scrollback() === 0;
+  const first = () => store.history?.first() ?? 0;
+  // Rebase before large absolute row ids lose pixel precision in native floats.
+  const origin = createMemo(() => Math.floor(first() / 512) * 512);
+  let canvas: NodeMirror | undefined;
+  onFrame(() => hot.prop(canvas, "translateY", store.history?.translation(origin()) ?? 0));
+
+  const rowCanvas = <View ref={canvas} debugName="TerminalRows" class="absolute left-0 right-0 top-0" style={{ height: m.rows * m.cellH }}>
+        {Array.from({ length: m.rows + 2 }, (_, slot) => {
+          const row = createMemo(() => store.history ? slotRow(slot, first(), m.rows + 2) : slot);
+          const runs = () => store.history ? store.history.row(row()) : slot < m.rows ? store.row(slot)() : [];
+          return <View debugName="TerminalRow" class="absolute left-0 right-0" style={{ insetT: m.statusH + (row() - origin()) * m.cellH, height: m.cellH }}>
+            <Show when={runs() !== undefined} fallback={<View debugName="HistorySkeleton" class="absolute left-[5] top-[3] h-[4]" style={{ width: 65 + row() % 7 * 35, bgColor: store.history?.rowError(row()) ? 0xff35416b : 0xff30251d }} />}>
+          <For each={runs()}>
+            {(run: Run) => (
+              <>
+                <Show when={run[3] >= 0}>
+                  <View
+                    class="absolute top-0"
+                    style={{
+                      insetL: run[0] * m.cellW,
+                      width: runColumns(run) * m.cellW,
+                      height: m.cellH,
+                      bgColor: rgbToAbgr(run[3]),
+                    }}
+                  />
+                </Show>
+                <Text
+                  class="absolute top-0 font-mono text-xs"
+                  style={
+                    isDynamicSlot(run[4])
+                      ? {
+                          // The companion baked this atlas's advances to the
+                          // grid, so it needs no tracking correction.
+                          insetL: run[0] * m.cellW,
+                          lineHeight: m.cellH,
+                          fontSlot: run[4],
+                          textColor: rgbToAbgr(run[2] >= 0 ? run[2] : THEME_FG),
+                        }
+                      : {
+                          insetL: run[0] * m.cellW,
+                          lineHeight: m.cellH,
+                          tracking: m.track,
+                          textColor: rgbToAbgr(run[2] >= 0 ? run[2] : THEME_FG),
+                        }
+                  }
+                >
+                  {run[1]}
+                </Text>
+              </>
+            )}
+          </For>
+            </Show>
+          </View>;
+        })}
+      </View>;
 
   return (
     <View debugName="TermScreen" class="relative w-full h-full bg-[#10151c] overflow-hidden">
@@ -127,54 +185,9 @@ export function TermGrid(props: GridProps) {
         />
       </Show>
 
-      {Array.from({ length: m.rows }, (_, y) => (
-        <View
-          class="absolute left-0 right-0"
-          style={{ insetT: m.statusH + y * m.cellH, height: m.cellH }}
-        >
-          <For each={store.row(y)()}>
-            {(run: Run) => (
-              <>
-                <Show when={run[3] >= 0}>
-                  <View
-                    class="absolute top-0"
-                    style={{
-                      insetL: run[0] * m.cellW,
-                      width: runColumns(run) * m.cellW,
-                      height: m.cellH,
-                      bgColor: rgbToAbgr(run[3]),
-                    }}
-                  />
-                </Show>
-                <Text
-                  class="absolute top-0 font-mono text-xs"
-                  style={
-                    isDynamicSlot(run[4])
-                      ? {
-                          // The companion baked this atlas's advances to the
-                          // grid, so it needs no tracking correction.
-                          insetL: run[0] * m.cellW,
-                          lineHeight: m.cellH,
-                          fontSlot: run[4],
-                          textColor: rgbToAbgr(run[2] >= 0 ? run[2] : THEME_FG),
-                        }
-                      : {
-                          insetL: run[0] * m.cellW,
-                          lineHeight: m.cellH,
-                          tracking: m.track,
-                          textColor: rgbToAbgr(run[2] >= 0 ? run[2] : THEME_FG),
-                        }
-                  }
-                >
-                  {run[1]}
-                </Text>
-              </>
-            )}
-          </For>
-        </View>
-      ))}
+      {rowCanvas}
 
-      <Show when={store.conn() !== "live"}>
+      <Show when={store.conn() !== "live" && !store.history?.manifest()}>
         <View class="absolute left-0 right-0 top-0 bottom-0 flex-col items-center justify-center gap-[6] bg-[#10151cf0]">
           <Text class="text-lg text-[#9fb6d8] font-bold">pocket term</Text>
           <Text class="text-xs text-[#5d708c]">{connectionLabel(store)}</Text>

@@ -11,8 +11,10 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { TERM_PROTO, type ClientLine, type HostLine, type Run } from "../shared/protocol.ts";
 import type { ExchangeReply, ExchangeRequest } from "../shared/exchange.ts";
+import type { HistoryManifest, HistoryReply } from "../shared/history.ts";
+import { createCursorStick } from "../app/stick.ts";
 
-test("real macOS PTYs: 80x24, multiplex, lost reply, reconnect, VT modes and exit", { timeout: 30000 }, async () => {
+test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT modes", { timeout: 45000 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), "pocket-term-pty-"));
   const worker = fork(fileURLToPath(new URL("../host/terminal-worker.ts", import.meta.url)), ["--port", "0", "--no-mirror", "--no-beacon", "--no-login", "--shell", "/bin/sh", "--cwd", directory], {
     env: { ...process.env, HOME: directory }, stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -51,21 +53,31 @@ test("real macOS PTYs: 80x24, multiplex, lost reply, reconnect, VT modes and exi
       env: { ...process.env, POCKET_TERM_PROVIDER: JSON.stringify({ address: "127.0.0.1", port: (native.address() as { port: number }).port, key: pairingKey, ...config }) }, stdio: ["ignore", "pipe", "pipe"],
     });
     provider.stdout!.on("data", data => log += data); provider.stderr!.on("data", data => log += data);
-    const post = async (request: ExchangeRequest): Promise<ExchangeReply> => {
+    const capability = async (method: string, request: unknown): Promise<any> => {
       const deadline = Date.now() + 4000;
       while (!transport || transport.destroyed) { if (Date.now() > deadline) throw new Error(`Provider did not connect: ${log}`); await delay(5); }
       const id = nextRequest++;
-      const record = Buffer.from(JSON.stringify({ v: 1, id, method: "term.exchange", payload: JSON.stringify(request) }));
+      const record = Buffer.from(JSON.stringify({ v: 1, id, method, payload: JSON.stringify(request) }));
       const frame = Buffer.alloc(4 + record.length); frame.writeUInt32BE(record.length); record.copy(frame, 4);
       const reply = await new Promise<any>((resolve, reject) => {
         const timer = setTimeout(() => { waiting.delete(id); reject(new Error(`Provider reply timeout: ${log}`)); }, 5000);
         waiting.set(id, value => { clearTimeout(timer); resolve(value); }); transport!.write(frame);
       });
-      assert.equal(reply.error, undefined); return JSON.parse(reply.payload);
+      if (reply.error) throw new Error(reply.error); return JSON.parse(reply.payload);
+    };
+    const post = (request: ExchangeRequest): Promise<ExchangeReply> => capability("term.exchange", request);
+    const historyRow = async (sid: number, m: HistoryManifest, row: number): Promise<Run[]> => {
+      let raw = "", parts = 1;
+      for (let part = 0; part < parts; part++) {
+        const p = await capability("term.history", { sid, epoch: m.epoch, row, part }) as HistoryReply;
+        assert.equal(p.epoch, m.epoch); assert.equal(p.row, row); assert.equal(p.part, part); parts = p.parts; raw += p.data;
+      }
+      return JSON.parse(raw);
     };
     class Replica {
       id: string; epoch?: string; received = 0; command = 0; partial = "";
       active = -1; sessions: number[] = []; grid: Run[][] = []; lines: HostLine[] = [];
+      history?: HistoryManifest;
       constructor(id: string) { this.id = id; }
       async exchange(line?: ClientLine, loseReply = false) {
         const request: ExchangeRequest = { replica: this.id, epoch: this.epoch, received: this.received, ...(line ? { command: { id: ++this.command, line } } : {}) };
@@ -78,7 +90,7 @@ test("real macOS PTYs: 80x24, multiplex, lost reply, reconnect, VT modes and exi
           if (!reply.more) {
             const message = JSON.parse(this.partial) as HostLine; this.partial = ""; this.lines.push(message);
             if (message.t === "sessions") { this.sessions = message.list.map(s => s.sid); this.active = message.active; }
-            if (message.t === "grid") for (const [y, ...runs] of message.rows) this.grid[y] = runs;
+            if (message.t === "grid") { for (const [y, ...runs] of message.rows) this.grid[y] = runs; if (message.history) this.history = message.history; }
           }
         }
         return reply;
@@ -131,6 +143,40 @@ test("real macOS PTYs: 80x24, multiplex, lost reply, reconnect, VT modes and exi
     await reconnected.exchange({ t: "paste", s: "world", phase: "end" });
     await reconnected.until(() => reconnected.text().includes("PASTE_DONE"));
     assert.equal(readFileSync(join(directory, "paste-bytes"), "utf8"), "\x1b[200~hello\nworld\x1b[201~");
+    // Real editor sessions receive the same named keys emitted by the right
+    // stick. File contents prove cursor movement, not just PTY echo.
+    for (const editor of ["vim", "nano"]) {
+      const path = join(directory, `${editor}.txt`); writeFileSync(path, "alpha\nbeta\n");
+      await reconnected.exchange({ t: "ch", s: editor === "vim" ? "vim -Nu NONE -n vim.txt\r" : "nano nano.txt\r" });
+      await reconnected.until(() => !!reconnected.history?.alternate && reconnected.text().includes("beta"));
+      const stick = createCursorStick();
+      await reconnected.exchange({ t: "key", k: stick.step(0, 0.9)! }); stick.step(0, 0);
+      await reconnected.exchange({ t: "key", k: stick.step(0.9, 0)! });
+      await reconnected.exchange({ t: "ch", s: editor === "vim" ? "iX" : "X" });
+      if (editor === "vim") {
+        await reconnected.exchange({ t: "key", k: "Escape" }); await reconnected.exchange({ t: "ch", s: ":wq\r" });
+      } else {
+        await reconnected.exchange({ t: "key", k: "o", ctrl: 1 }); await reconnected.exchange({ t: "key", k: "Enter" });
+        await reconnected.exchange({ t: "key", k: "x", ctrl: 1 });
+      }
+      await reconnected.until(() => reconnected.history?.alternate === false);
+      assert.equal(readFileSync(path, "utf8"), "alpha\nbXeta\n");
+    }
+    await reconnected.exchange({ t: "ch", s: "printf '\\033[3J\\033[2J\\033[H'; i=0; while [ \"$i\" -lt 150 ]; do printf 'row-%03d\\n' \"$i\"; i=$((i+1)); done\r" });
+    await reconnected.until(() => reconnected.text().includes("row-149") && (reconnected.history?.end ?? 0) >= 100);
+    const history = { ...reconnected.history! }, address = history.first + 3;
+    const original = await historyRow(sid1, history, address);
+    assert.equal(original.map(r => r[1]).join(""), "row-003");
+    const newest = await historyRow(sid1, history, history.end - 1);
+    assert(newest.map(r => r[1]).join("").startsWith("row-"));
+    await reconnected.exchange({ t: "ch", s: "printf 'more\\nmore\\nmore\\nmore\\n'\r" });
+    await reconnected.until(() => (reconnected.history?.end ?? 0) > history.end);
+    assert.equal(reconnected.history!.epoch, history.epoch); assert.deepEqual(await historyRow(sid1, history, address), original);
+    transport!.destroy(); // historical addresses outlive the provider worker
+    assert.deepEqual(await historyRow(sid1, history, address), original);
+    await reconnected.exchange({ t: "ch", s: "printf '\\033[3JHISTORY_CLEARED\\n'\r" });
+    await reconnected.until(() => reconnected.history?.epoch !== history.epoch);
+    await assert.rejects(historyRow(sid1, history, address), /expired/);
     await first.exchange({ t: "kill", sid: sid2 }); await first.until(() => first.sessions.length === 1 && first.active === sid1);
     await first.exchange({ t: "kill", sid: sid1 }); await first.until(() => first.sessions.length === 0 && first.active === -1);
     await first.exchange({ t: "new" }); await first.until(() => first.sessions.length === 1 && first.active > sid2);

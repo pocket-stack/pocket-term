@@ -108,7 +108,7 @@ export function resolveCell(cell: TerminalCell): Cell {
 export function rowRuns(cells: readonly Cell[]): Run[] {
   const runs: Run[] = [];
   let run:
-    | { col: number; text: string; fg: number; bg: number; slot?: number; span: number }
+    | { col: number; text: string; fg: number; bg: number; slot?: number; span: number; columns: number }
     | null = null;
   let pendingBlanks = 0;
   const close = () => {
@@ -143,6 +143,7 @@ export function rowRuns(cells: readonly Cell[]): Run[] {
       run.fg === cell.fg &&
       run.bg === cell.bg &&
       run.slot === cell.slot &&
+      (cell.slot === undefined || run.columns === columns) &&
       (pendingBlanks === 0 || (cell.slot === undefined && pendingBlanks <= 4))
     ) {
       run.text += " ".repeat(pendingBlanks) + ch;
@@ -151,7 +152,7 @@ export function rowRuns(cells: readonly Cell[]): Run[] {
       continue;
     }
     close();
-    run = { col, text: ch, fg: cell.fg, bg: cell.bg, slot: cell.slot, span: columns };
+    run = { col, text: ch, fg: cell.fg, bg: cell.bg, slot: cell.slot, span: columns, columns };
   }
   close();
   return runs;

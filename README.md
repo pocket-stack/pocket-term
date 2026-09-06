@@ -3,7 +3,7 @@
 Pocket Term controls **macOS PTY sessions from a Nintendo 3DS**. The top
 screen displays **80 columns × 24 rows**, using a **5px monospace advance
 and 10px row height** across its entire 400×240 display. The touch screen
-contains session tabs, connection status and the keyboard.
+contains session tabs, a scroll touchpad, connection status and the keyboard.
 
 <img src="docs/terminal-80x24.png" width="400" alt="Pocket Term's native 3DS renderer: 80 by 24 terminal grid, paged sessions and touch keyboard" />
 
@@ -42,7 +42,9 @@ to feed libghostty on the Mac. Completed grid updates commit together.
 
 The shared protocol is in `shared/protocol.ts`; geometry and queue budgets
 are in `shared/layout.ts` and `shared/exchange.ts`. The live terminal stream
-uses ordered delivery rather than immutable document tile caching.
+uses ordered delivery. Historical rows use a separate bounded local cache;
+[history synchronization](docs/SCROLLBACK.md) specifies row identity, epoch
+fences, offline behavior and glyph residency.
 
 **Desktop mirrors share the same PTY and grid renderer.** Each window gets
 a dedicated loopback listener bound to its session, so concurrent window
@@ -56,7 +58,9 @@ exposed on the LAN. The 3DS connects through its app-specific pairing key.
 | --- | --- |
 | A / B / X / Y | Enter / Backspace / Tab / Space |
 | D-pad | Terminal arrows, with repeat |
-| Circle pad | Scrollback |
+| Circle pad / touchpad flick | Local inertial scrollback |
+| Right nub (supported hardware) | Repeating editor cursor arrows |
+| Touch font name | Switch Spleentt / Spleen / Fusion Pixel |
 | START | Ctrl-C |
 | SELECT / touch + | New session |
 | L / R | Previous / next session |
@@ -138,6 +142,7 @@ records the previous 57×17 svc build, not this upgrade.
 
 ## License
 
-MIT. PocketJS and libghostty retain their own licenses. The generated terminal
-atlas derives from the vendored JetBrains Mono under the SIL Open Font License;
-its license is in `vendor/pocketjs/assets/fonts/LICENSE-JetBrainsMono.txt`.
+MIT. PocketJS, libghostty and font sources retain their own licenses.
+[Font sources and derivation](assets/fonts/README.md) lists Spleen and Spleentt
+under BSD-2-Clause, Fusion Pixel and JetBrains Mono under SIL OFL.
+The default terminal face is Spleentt 5×8, padded to a 5×10 cell.

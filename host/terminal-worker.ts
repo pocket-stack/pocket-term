@@ -7,6 +7,7 @@ import { createServer as createHttpServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Mailbox } from "./exchange.ts";
 import { LIMITS, type ExchangeRequest } from "../shared/exchange.ts";
+import { HISTORY, type HistoryRequest } from "../shared/history.ts";
 import { hostname } from "node:os";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -139,6 +140,9 @@ class Conn {
   gen = 0;
   seq = 0;
   scrollback = 0;
+  localHistory = false;
+  historyGlyphs: [number, number][] = [];
+  pendingGlyphs?: [number, number][];
   rowCache: string[] = [];
   lastCursor = "";
   lastRx = Date.now();
@@ -168,7 +172,7 @@ class Conn {
         ...(full ? { full: 1 as const } : {}),
         ...(last ? {} : { more: 1 as const }),
         rows: chunks[i],
-        ...(last ? { cur: cursor, sb: this.scrollback } : {}),
+        ...(last ? { cur: cursor, sb: this.scrollback, history: hub.sessions.get(this.attachedSid)?.history.manifest() } : {}),
       });
     }
   }
@@ -288,14 +292,14 @@ const atlas = new DynamicAtlasSet();
  *  do. */
 const uncovered = new Set<number>();
 
-function classify(cell: Cell): void {
+function classify(cell: Cell, want = true): void {
   if (cell.width === 0 || cell.ch === "" || cell.ch === " ") return;
   const cp = cell.ch.codePointAt(0);
   if (cp === undefined || isBakedCodepoint(cp)) return;
   const columns = cell.width === 2 ? 2 : 1;
-  const slot = atlas.slotFor(cp);
+  const slot = atlas.slotFor(cp, columns);
   if (slot >= 0) {
-    atlas.want(cp, columns, slot);
+    if (want) atlas.want(cp, columns, slot);
     cell.slot = slot;
     return;
   }
@@ -329,7 +333,7 @@ function viewRows(session: Session, conn: Conn): Run[][] {
     const offset = history - back + y;
     const cells: Cell[] = [];
     for (let x = 0; x < conn.cols; x += 1) {
-      const cell = fromHistory ? core.getScrollbackCell(offset, x) : core.getCell(y - back, x);
+      const cell = fromHistory ? core.getScrollbackCell(history - 1 - offset, x) : core.getCell(y - back, x);
       const resolved = resolveCell(cell);
       classify(resolved);
       cells.push(resolved);
@@ -407,7 +411,7 @@ function snapshot(conn: Conn) {
   const rows = viewRows(session, conn);
   conn.rowCache = rows.map(rowKey);
   const cursor = cursorFor(session, conn);
-  conn.lastCursor = JSON.stringify([cursor, conn.scrollback]);
+  conn.lastCursor = JSON.stringify([cursor, conn.scrollback, session.history.manifest()]);
   const updates: RowUpdate[] = rows.map((runs, y) => [y, ...runs]);
   conn.sendGrid(updates, cursor, true);
 }
@@ -427,7 +431,7 @@ function flush(conn: Conn) {
     }
   }
   const cursor = cursorFor(session, conn);
-  const cursorKey = JSON.stringify([cursor, conn.scrollback]);
+  const cursorKey = JSON.stringify([cursor, conn.scrollback, session.history.manifest()]);
   if (updates.length === 0 && cursorKey === conn.lastCursor) return;
   conn.lastCursor = cursorKey;
   conn.sendGrid(updates, cursor, false);
@@ -438,6 +442,8 @@ function attach(conn: Conn, sid: number) {
   conn.attachedSid = sid;
   if (options.trace) console.log(`[term] ${conn.role} attached session #${sid}`);
   conn.scrollback = 0;
+  conn.historyGlyphs = [];
+  conn.pendingGlyphs = undefined;
   conn.sendLine({ t: "sessions", list: hub.list(), active: sid });
   snapshot(conn);
 }
@@ -461,6 +467,7 @@ function handleLine(conn: Conn, line: ClientLine) {
     case "hello": {
       if (line.proto !== TERM_PROTO) throw new Error("Terminal protocol mismatch");
       conn.role = conn.mirrorSid !== undefined ? "mirror" : line.role ?? "device";
+      conn.localHistory = conn.role === "device" && line.history === 1;
       conn.cols = 80; conn.rows = 24; conn.cell = [5, 10];
       conn.sawClientHello = true;
       // A hello means a replica that has loaded nothing yet, which is not the
@@ -553,6 +560,7 @@ function handleLine(conn: Conn, line: ClientLine) {
       break;
     }
     case "scroll": {
+      if (conn.localHistory) break;
       const session = hub.sessions.get(conn.attachedSid);
       if (!session) break;
       const max = session.core?.getScrollbackCount() ?? 0;
@@ -562,6 +570,15 @@ function handleLine(conn: Conn, line: ClientLine) {
       scheduleFlush();
       break;
     }
+    case "glyphs":
+      if (line.reset) conn.pendingGlyphs = [];
+      if (!conn.pendingGlyphs) throw new Error("Glyph demand needs an opening chunk");
+      conn.pendingGlyphs.push(...[...line.one].map(ch => [ch.codePointAt(0)!, 1] as [number, number]),
+        ...[...line.two].map(ch => [ch.codePointAt(0)!, 2] as [number, number]));
+      if (conn.pendingGlyphs.length > 1024) { conn.pendingGlyphs = undefined; throw new Error("Visible glyph budget exceeded"); }
+      if (!line.more) { conn.historyGlyphs = conn.pendingGlyphs; conn.pendingGlyphs = undefined; }
+      scheduleFlush();
+      break;
     case "resync":
       conn.atlasSent.clear(); conn.atlasQueue = [];
       snapshot(conn);
@@ -653,6 +670,14 @@ function flushAll(): void {
   // launching an editor, or leaving one.
   for (const session of hub.sessions.values()) session.refreshTitle();
   for (const conn of hub.conns) flush(conn);
+  // Only visible history asks for glyph residency. Prefetching hundreds of
+  // other rows must not evict the glyphs the user is currently reading.
+  for (const conn of hub.conns) {
+    if (conn.mailbox && Date.now() - conn.mailbox.touched > 15000) continue;
+    for (const [cp, columns] of conn.historyGlyphs) {
+      const slot = atlas.slotFor(cp, columns); if (slot >= 0) atlas.want(cp, columns, slot);
+    }
+  }
   pumpAtlasBake();
 }
 
@@ -773,7 +798,7 @@ console.log(`[term] shell ${options.shell}, host name "${options.name}"`);
 const epoch = randomUUID(), token = randomBytes(32).toString("hex");
 const replicas = new Map<string, Conn>();
 const broker = createHttpServer(async (request, response) => {
-  if (request.method !== "POST" || request.url !== "/exchange" || request.headers.authorization !== `Bearer ${token}`) {
+  if (request.method !== "POST" || !["/exchange", "/history"].includes(request.url ?? "") || request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(403).end(); return;
   }
   try {
@@ -781,6 +806,26 @@ const broker = createHttpServer(async (request, response) => {
     for await (const chunk of request) {
       body += chunk;
       if (Buffer.byteLength(body) > 4096) throw new Error("Request exceeds budget");
+    }
+    if (request.url === "/history") {
+      const input = JSON.parse(body) as HistoryRequest;
+      if (!Number.isSafeInteger(input.sid) || !Number.isSafeInteger(input.part) || input.part < 0 || input.part > Math.ceil(HISTORY.rowChars / HISTORY.fragmentChars)) throw new Error("Invalid history request");
+      const session = hub.sessions.get(input.sid);
+      if (!session?.core) throw new Error("Terminal no longer exists");
+      const offset = session.history.offset(input.row, input.epoch);
+      const cells: Cell[] = [];
+      for (let x = 0; x < session.cols; x++) {
+        const cell = resolveCell(session.core.getScrollbackCell(offset, x)); classify(cell, false); cells.push(cell);
+      }
+      const raw = JSON.stringify(rowRuns(cells));
+      if (raw.length > HISTORY.rowChars) throw new Error("History row exceeds budget");
+      const parts = Math.ceil(raw.length / HISTORY.fragmentChars);
+      if (input.part >= parts) throw new Error("Invalid history fragment");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ epoch: input.epoch, row: input.row, part: input.part, parts,
+        data: raw.slice(input.part * HISTORY.fragmentChars, (input.part + 1) * HISTORY.fragmentChars) }));
+      scheduleFlush();
+      return;
     }
     const input = JSON.parse(body) as ExchangeRequest;
     if (typeof input.replica !== "string" || !/^[a-zA-Z0-9-]{8,80}$/.test(input.replica)) throw new Error("Invalid replica");
@@ -833,6 +878,8 @@ function validateClientLine(line: ClientLine) {
       return;
     case "key":
       if (typeof line.k !== "string" || line.k.length > 16) throw new Error("Invalid key"); return;
+    case "glyphs":
+      if (typeof line.one !== "string" || typeof line.two !== "string" || line.one.length + line.two.length > 448 || [...line.one, ...line.two].length > 224) throw new Error("Glyph demand exceeds budget"); return;
     case "kill": case "attach":
       if (!integer(line.sid, 1, Number.MAX_SAFE_INTEGER)) throw new Error("Invalid session"); return;
     case "scroll":

@@ -15,7 +15,8 @@
         "input.touch.auxiliary"
       ],
       "enhances": [
-        "input.analog.left"
+        "input.analog.left",
+        "input.analog.right"
       ]
     }
   },

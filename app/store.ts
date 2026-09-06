@@ -14,8 +14,10 @@ import {
   type Role,
   type Run,
   type SessionInfo,
+  isDynamicSlot,
 } from "../shared/protocol.ts";
 import type { TermChannel } from "./channel.ts";
+import { createTermHistory, type TermHistory } from "./history.ts";
 
 export type ConnState = "no-svc" | "search" | "link" | "live";
 
@@ -58,6 +60,7 @@ function base64ToBytes(text: string): Uint8Array {
 }
 
 export interface TermStore {
+  history?: TermHistory;
   conn: Accessor<ConnState>;
   hostName: Accessor<string>;
   sessions: Accessor<SessionInfo[]>;
@@ -105,6 +108,29 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
   const [dynamicGlyphs, setDynamicGlyphs] = createSignal(0);
   const [status, setStatus] = createSignal("");
   const rowSignals = Array.from({ length: rows }, () => createSignal<Run[]>([]));
+  const coverage = new Map<number, Set<number>>();
+  const [atlasVersion, setAtlasVersion] = createSignal(0);
+  const history = svc?.historyIO ? createTermHistory(svc.historyIO, y => rowSignals[y][0], rows, cell[1], {
+    ready(runs) {
+      atlasVersion();
+      return runs.every(run => !isDynamicSlot(run[4]) || [...run[1]].every(ch => coverage.get(run[4]!)?.has(ch.codePointAt(0)!)));
+    },
+    demand(rows) {
+      const wanted = new Map<string, number>();
+      for (const row of rows) for (const run of row) if (isDynamicSlot(run[4])) {
+        const chars = [...run[1]], wide = (run[5] ?? run[1].length) > chars.length;
+        for (const ch of chars) if (wanted.size < 1024) wanted.set(ch, wide ? 2 : 1);
+      }
+      const entries = [...wanted], lines: ClientLine[] = [];
+      for (let at = 0; at < Math.max(1, entries.length); at += 224) {
+        const chunk = entries.slice(at, at + 224);
+        lines.push({ t: "glyphs", one: chunk.filter(e => e[1] === 1).map(e => e[0]).join(""), two: chunk.filter(e => e[1] === 2).map(e => e[0]).join(""),
+          ...(at === 0 ? { reset: 1 as const } : {}), ...(at + 224 < entries.length ? { more: 1 as const } : {}) });
+      }
+      if (svc.sendBatch) return svc.sendBatch(lines);
+      lines.forEach(line => svc.send(line)); return true;
+    },
+  }) : undefined;
 
   let wasOpen = false;
   let gen = -1;
@@ -163,6 +189,11 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     const load = getOps().loadFontAtlas;
     if (!load || blob.length < 16) return;
     load(blob);
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength), count = view.getUint16(6, true);
+    if (16 + count * 8 <= blob.length) {
+      coverage.set(line.slot, new Set(Array.from({ length: count }, (_, n) => view.getUint32(16 + n * 8, true))));
+      setAtlasVersion(n => n + 1);
+    }
     // Each blob's header carries its own glyph count (spec FONT ATLAS v3);
     // the status line reports the whole chain's.
     glyphCounts.set(line.slot, blob[6] | (blob[7] << 8));
@@ -201,19 +232,21 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     batch(() => {
       for (const [y, runs] of staged!) rowSignals[y][1](runs);
       staged = undefined;
+      if (line.cur) setCursor(line.cur);
+      if (line.sb !== undefined) setScrollback(line.sb);
+      if (line.history) history?.adopt(line.sid, line.history);
+      sawGrid = true;
+      setConn("live");
     });
-    if (line.cur) setCursor(line.cur);
-    if (line.sb !== undefined) setScrollback(line.sb);
-    sawGrid = true;
-    setConn("live");
   };
 
   const sendText = (s: string) => {
     if (!wasOpen || activeSid() < 0) return;
-    if (s.length > 0 && s.length <= 256) svc?.send({ t: "ch", s });
+    if (s.length > 0 && s.length <= 256) { history?.goLive(); svc?.send({ t: "ch", s }); }
   };
   const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean) => {
     if (!wasOpen || activeSid() < 0) return;
+    history?.goLive();
     svc?.send({
       t: "key",
       k,
@@ -224,6 +257,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
   };
   const paste = (text: string) => {
     if (!wasOpen || activeSid() < 0 || !text) return;
+    history?.goLive();
     if (text.length > 8192) { setStatus("Paste exceeds 8192 characters"); return; }
     const chunks: string[] = [];
     for (let at = 0; at < text.length;) {
@@ -237,7 +271,8 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     else lines.forEach(line => svc?.send(line));
   };
   const scroll = (lines: number) => {
-    if (lines !== 0) svc?.send({ t: "scroll", d: lines });
+    if (history) history.scroll(lines);
+    else if (lines !== 0) svc?.send({ t: "scroll", d: lines });
   };
 
   const apply = (line: HostLine | HostInputLine) => {
@@ -245,6 +280,8 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       case "transport-reset":
         gen = -1; seq = -1; staged = undefined; sawGrid = false;
         clearGrid(); atlasRx.clear(); glyphCounts.clear(); setDynamicGlyphs(0);
+        history?.reset();
+        coverage.clear(); setAtlasVersion(n => n + 1);
         setConn("link");
         break;
       case "hello":
@@ -284,7 +321,9 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       case "sessions":
         setSessions(line.list);
         if (line.active !== activeSid()) {
+          clearGrid(); sawGrid = false; staged = undefined; setConn("link");
           setActiveSid(line.active);
+          history?.select(line.active);
           if (line.active >= 0) lastWanted = line.active;
         }
         if (line.list.length === 0) {
@@ -322,17 +361,18 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
   };
 
   return {
+    history,
     conn,
     hostName,
     sessions,
     activeSid,
     row: (y) => rowSignals[y][0],
     cursor,
-    scrollback,
+    scrollback: () => history?.manifest() ? history.back() : scrollback(),
     bell,
     dynamicGlyphs,
     status,
-    dispose() { svc?.dispose?.(); atlasRx.clear(); },
+    dispose() { history?.dispose(); svc?.dispose?.(); atlasRx.clear(); },
     paste,
     frame() {
       if (svc === null) return;
@@ -357,16 +397,19 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
           rows,
           cell,
           role,
+          ...(history ? { history: 1 as const } : {}),
           ...(lastWanted >= 0 ? { want: lastWanted } : {}),
         });
       }
       wasOpen = open;
       if (!open) {
         setConn("search");
+        history?.setOnline(false); history?.frame();
         return;
       }
       if (conn() !== "live" || !sawGrid) setConn(sawGrid ? "live" : "link");
       for (const line of svc.poll()) apply(line);
+      history?.setOnline(sawGrid && conn() === "live"); history?.frame();
     },
     sendText,
     sendKey,

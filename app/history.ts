@@ -1,0 +1,138 @@
+import { createSignal, type Accessor } from "solid-js";
+import { createScroller } from "@pocketjs/framework/kinetics";
+import { createResourceRuntime, createResourceView } from "@pocketjs/framework/resource-view";
+import type { ResourceDemand, ResourceLoad } from "@pocketjs/framework/resource-cache";
+import type { createOffloadClient } from "@pocketjs/framework/offload";
+import { HISTORY, decodeHistoryRow, historyKey, validManifest, type HistoryInput, type HistoryManifest, type HistoryReply } from "../shared/history.ts";
+import type { Run } from "../shared/protocol.ts";
+
+export type HistoryIO = Pick<ReturnType<typeof createOffloadClient>, "request" | "cancel">;
+
+/** Reads have their own cancellable tickets; they never wait behind queued
+ * terminal input and can never execute a PTY mutation on retry. */
+export function historyLoader(io: HistoryIO): ResourceLoad<HistoryInput, string> {
+  return (input, complete) => {
+    let id = 0, closed = false, part = 0, parts = 0, raw = "";
+    const next = (): boolean => {
+      id = io.request("term.history", JSON.stringify({ ...input, part }), result => {
+        id = 0;
+        if (closed) return;
+        if (!result.ok) { closed = true; complete(result); return; }
+        try {
+          const p = JSON.parse(result.value) as HistoryReply;
+          if (p.epoch !== input.epoch || p.row !== input.row || p.part !== part ||
+              !Number.isInteger(p.parts) || p.parts < 1 || p.parts > Math.ceil(HISTORY.rowChars / HISTORY.fragmentChars) ||
+              parts && p.parts !== parts || typeof p.data !== "string" || p.data.length > HISTORY.fragmentChars ||
+              raw.length + p.data.length > HISTORY.rowChars) throw new Error("Invalid history fragment");
+          raw += p.data; parts = p.parts; part++;
+          if (part === parts) { closed = true; complete({ ok: true, value: raw }); }
+          else if (!next()) throw new Error("History transport busy");
+        } catch (cause) { closed = true; complete({ ok: false, error: String(cause).slice(0, 120) }); }
+      });
+      return id !== 0;
+    };
+    if (!next()) return false;
+    return { cancel() { closed = true; if (id) io.cancel(id); raw = ""; } };
+  };
+}
+
+export function historyDemand(sid: number, m: HistoryManifest, first: number, direction: number, visible = 26): ResourceDemand<HistoryInput>[] {
+  if (m.alternate) return [];
+  const demand: ResourceDemand<HistoryInput>[] = [], seen = new Set<number>();
+  const add = (row: number, pin: boolean) => {
+    if (row < m.first || row >= m.end || seen.has(row) || demand.length >= HISTORY.demand) return;
+    seen.add(row); demand.push({ input: { sid, epoch: m.epoch, row }, priority: demand.length + (pin ? 0 : 30), pin });
+  };
+  for (let n = 0; n < visible; n++) add(first + n, true);
+  // A live view warms its newest history; movement biases future addresses
+  // without removing the useful rows immediately behind the viewport.
+  for (let n = 1; n <= HISTORY.demand; n++) {
+    if (direction <= 0) { add(first - n, false); if (n % 3 === 0) add(first + visible + n / 3 - 1, false); }
+    else { add(first + visible + n - 1, false); if (n % 3 === 0) add(first - n / 3, false); }
+  }
+  return demand;
+}
+
+export function createTermHistory(io: HistoryIO, liveRow: (y: number) => Accessor<Run[]>, rows: number, cellH: number,
+  glyphs?: { ready(runs: Run[]): boolean; demand(rows: Run[][]): boolean }) {
+  const [manifest, setManifest] = createSignal<HistoryManifest | undefined>(undefined, { equals: (a, b) =>
+    a?.epoch === b?.epoch && a?.first === b?.first && a?.end === b?.end && a?.alternate === b?.alternate });
+  const [sid, setSid] = createSignal(-1), [first, setFirst] = createSignal(0);
+  let online = false, following = true, direction = -1;
+  const maximum = () => { const m = manifest(); return m ? (m.end - m.first) * cellH : 0; };
+  const scroller = createScroller({ max: maximum, extent: () => rows * cellH, overscroll: 0 });
+  const runtime = createResourceRuntime({ maxCollections: 1, maxConcurrent: HISTORY.concurrent, startsPerFrame: 1, completionsPerFrame: 1,
+    available: () => online && !!manifest() });
+  const cache = runtime.createCollection({ key: historyKey, maxEntries: HISTORY.entries, maxViews: 1, maxDemandsPerView: HISTORY.demand,
+    maxCost: HISTORY.entries * 65536, cost: () => 65536, maxResponseBytes: HISTORY.rowChars * 2,
+    retry: { attempts: 3, delayFrames: 45, maxDelayFrames: 180 }, load: historyLoader(io), materialize: decodeHistoryRow });
+  const view = createResourceView(cache, { demand: () => { const m = manifest(); return m ? historyDemand(sid(), m, first(), direction, rows + 2) : []; } });
+  const updateFirst = () => { const m = manifest(); setFirst((m?.first ?? 0) + Math.floor(Math.round(scroller.offset()) / cellH)); };
+  const usable = () => !!manifest() && !manifest()!.alternate;
+  const goLive = () => { following = true; scroller.scrollTo(maximum(), { immediate: true }); updateFirst(); };
+  let lastGlyphRows: (Run[] | undefined)[] = [], glyphCooldown = 0;
+  return {
+    manifest, first, scroller,
+    select(next: number) {
+      if (sid() === next) return;
+      runtime.cancel(); setSid(next); setManifest(undefined); following = true;
+      scroller.scrollTo(0, { immediate: true }); updateFirst();
+    },
+    adopt(next: number, m: HistoryManifest) {
+      if (!validManifest(m)) throw new Error("Invalid terminal history manifest");
+      const old = manifest(), changed = next !== sid() || !old || old.epoch !== m.epoch;
+      if (changed) {
+        runtime.cancel();
+        cache.invalidate(i => i.sid === next && i.epoch !== m.epoch, true);
+        following = true;
+      }
+      setSid(next); setManifest(m);
+      if (following || m.alternate) goLive();
+      else if (old && old.first !== m.first) {
+        scroller.rebase((old.first - m.first) * cellH);
+        if (scroller.offset() < 0) scroller.scrollTo(0, { immediate: true });
+      }
+      updateFirst();
+
+    },
+    setOnline(value: boolean) { if (online && !value) runtime.cancel(); online = value; },
+    reset() { runtime.cancel(); cache.clear(); setManifest(undefined); following = true; scroller.scrollTo(0, { immediate: true }); updateFirst(); },
+    frame() {
+      const before = scroller.offset(); scroller.step(); const motion = scroller.offset() - before;
+      if (motion !== 0) direction = Math.sign(motion);
+      if (scroller.state() === "idle" && scroller.offset() >= maximum() - 0.5) following = true;
+      updateFirst();
+      const m = manifest(), current: (Run[] | undefined)[] = [];
+      if (m && scroller.offset() < maximum() - 0.5) for (let y = first(); y < first() + rows + 1 && y < m.end; y++) {
+        current.push(view.value({ sid: sid(), epoch: m.epoch, row: y }));
+      }
+      if (glyphCooldown > 0) glyphCooldown--;
+      if (online && !glyphCooldown && (current.length !== lastGlyphRows.length || current.some((row, i) => row !== lastGlyphRows[i]))) {
+        glyphCooldown = 8;
+        if (!glyphs || glyphs.demand(current.filter((row): row is Run[] => row !== undefined))) lastGlyphRows = current;
+      }
+    },
+    nudge(px: number) { if (usable() && px) { following = false; direction = Math.sign(px); scroller.nudge(px); } },
+    scroll(lines: number) { if (usable() && lines) { following = false; direction = -Math.sign(lines); scroller.scrollBy(-lines * cellH); } },
+    beginDrag() { if (usable()) { following = false; scroller.beginDrag(); } },
+    drag(px: number) { if (usable()) { following = false; direction = Math.sign(px) || direction; scroller.drag(px); updateFirst(); } },
+    endDrag(velocity: number) { if (usable()) scroller.endDrag(Math.max(-1800, Math.min(1800, velocity))); },
+    stop() { scroller.stop(); }, goLive,
+    back: () => Math.max(0, Math.ceil((maximum() - scroller.offset()) / cellH)),
+    translation(origin: number) { return -((manifest()?.first ?? 0) - origin) * cellH - Math.round(scroller.offset()); },
+    row(row: number): Run[] | undefined {
+      const m = manifest();
+      if (!m) return row >= 0 && row < rows ? liveRow(row)() : [];
+      if (row >= m.end) return row < m.end + rows ? liveRow(row - m.end)() : [];
+      if (row < m.first) return [];
+      const runs = view.value({ sid: sid(), epoch: m.epoch, row });
+      return runs && (!glyphs || glyphs.ready(runs)) ? runs : undefined;
+    },
+    rowError(row: number) {
+      const m = manifest(); return !!m && row >= m.first && row < m.end && view.state({ sid: sid(), epoch: m.epoch, row }).status === "error";
+    },
+    stats: cache.stats,
+    dispose: runtime.dispose,
+  };
+}
+export type TermHistory = ReturnType<typeof createTermHistory>;

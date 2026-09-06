@@ -23,6 +23,7 @@ export function createTermChannel(io: IO, replica = `${Date.now().toString(36)}-
   };
   const send = (line: ClientLine) => { sendBatch([line]); };
   return {
+    historyIO: io,
     open: () => io.connected(),
     status: () => error,
     send,

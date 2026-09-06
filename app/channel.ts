@@ -1,6 +1,7 @@
 import type { ClientLine, HostInputLine, HostLine } from "../shared/protocol.ts";
 
 export interface TermChannel {
+  historyIO?: import("./history.ts").HistoryIO;
   /** Non-blocking transport probe — call once per frame; false while the
    *  companion is still being discovered (the app supplies the cadence). */
   open(): boolean;
@@ -13,4 +14,3 @@ export interface TermChannel {
   status?(): string;
   dispose?(): void;
 }
-

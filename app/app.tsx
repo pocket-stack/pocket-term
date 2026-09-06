@@ -4,15 +4,16 @@
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
-import { analogY, onFrame } from "@pocketjs/framework/lifecycle";
+import { analogY, rightAnalogX, rightAnalogY, onFrame } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
-import { getOps } from "@pocketjs/framework/host";
 import { TermGrid } from "./grid.tsx";
 import { KB_H, Keyboard } from "./keyboard.tsx";
 import { connectTermOffload } from "./offload.ts";
-import { loadTerminalFont } from "./font.ts";
+import { FONT_NAMES, FONT_LABELS, loadTerminalFont } from "./font.ts";
 import { TERM_LAYOUT, TABS_PER_PAGE, tabPage } from "../shared/layout.ts";
 import { createTermStore } from "./store.ts";
+import { createCursorStick } from "./stick.ts";
+import * as hot from "@pocketjs/framework/hot";
 
 const TAB_H = 26;
 const TAB_W = 72;
@@ -21,13 +22,6 @@ const TAB_W = 72;
 const TAB_NEW_W = 30;
 const KB_TOP = 240 - KB_H;
 
-/** The strip between the tabs and the keyboard: two 12 px lines, centred. */
-const HINT_LINE = 14;
-const HINT_TOP = Math.round((KB_TOP - TAB_H - (HINT_LINE + 12)) / 2);
-const HINT_BUTTONS = "SELECT new · L/R switch · hold ZL = ctrl";
-/** 12 px regular — slot 0 of the pinned table the compiler bakes
- *  (framework/compiler/tailwind.ts), which is what `text-xs` draws in. */
-const HINT_SLOT = 0;
 
 /* Closing a session is a hold, then a slide, then a release — not a tap on a
  * small ×. The panel is resistive and single-contact: an 18 px target inside
@@ -50,13 +44,12 @@ const DPAD_DELAY = 18;
 const DPAD_REPEAT = 4;
 
 export default function TermApp() {
-  const ops = getOps();
   loadTerminalFont();
   const { cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H } = TERM_LAYOUT;
-  const hintWidth = Math.ceil(ops.measureText(HINT_BUTTONS, HINT_SLOT));
   const store = createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, connectTermOffload());
   onCleanup(() => store.dispose());
   const [page, setPage] = createSignal(0);
+  const [fontIndex, setFontIndex] = createSignal(0);
   const visibleSessions = () => store.sessions().slice(page() * TABS_PER_PAGE, (page() + 1) * TABS_PER_PAGE);
   createEffect(() => {
     const at = store.sessions().findIndex(s => s.sid === store.activeSid());
@@ -69,7 +62,8 @@ export default function TermApp() {
   const ctrlActive = () => ctrlArmed() || ctrlHeld();
 
   const dpadHeld = new Map<number, number>();
-  let scrollCarry = 0;
+  const cursorStick = createCursorStick();
+  let scrollLabel: NodeMirror | undefined;
 
   let prevButtons = 0;
 
@@ -106,23 +100,18 @@ export default function TermApp() {
     if (pressed & BTN.START) send("c", true);
     if (pressed & BTN.SELECT) store.newSession();
 
+    const cursorKey = cursorStick.step(rightAnalogX(), rightAnalogY());
+    if (cursorKey) send(cursorKey, ctrlActive());
+
     if (sentThisFrame && ctrlArmed()) setCtrlArmed(false);
 
     if (pressed & BTN.LTRIGGER) store.attachSibling(-1);
     if (pressed & BTN.RTRIGGER) store.attachSibling(1);
 
-    // Circle pad Y scrubs scrollback: up = into history (positive delta).
+    // Scrolling changes a local camera, without queuing PTY commands.
     const pad = analogY();
-    if (Math.abs(pad) > 0.25) {
-      scrollCarry += -pad * 0.5;
-      const lines = Math.trunc(scrollCarry);
-      if (lines !== 0) {
-        scrollCarry -= lines;
-        store.scroll(lines);
-      }
-    } else {
-      scrollCarry = 0;
-    }
+    if (Math.abs(pad) > 0.08) store.history?.nudge(pad * 9);
+    hot.text(scrollLabel, store.conn() !== "live" ? "offline · cached" : store.history?.manifest()?.alternate ? "editor · cursor nub" : store.scrollback() > 0 ? `history · ${store.scrollback()} lines` : "live · flick to scroll");
   });
 
   // Session tab strip on the touch screen: tap a tab to attach, hold one to
@@ -133,6 +122,7 @@ export default function TermApp() {
     const count = Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE));
     if (contact.x < 90) setPage(p => (p - 1 + count) % count);
     else if (contact.x > 230) setPage(p => (p + 1) % count);
+    else { const next = (fontIndex() + 1) % FONT_NAMES.length; setFontIndex(next); loadTerminalFont(FONT_NAMES[next]); }
   } });
   /** The session the close bar is armed for, and how far the bar has slid. */
   const [closingSid, setClosingSid] = createSignal(-1);
@@ -193,6 +183,16 @@ export default function TermApp() {
   const closingTitle = () =>
     store.sessions().find((s) => s.sid === closingSid())?.title ?? "";
 
+  let touchpad: NodeMirror | undefined;
+  const [touching, setTouching] = createSignal(false);
+  createGesture({ surface: "auxiliary", region: { node: () => touchpad }, axis: "y", panSlop: 2,
+    onDown() { if (closingSid() < 0) { setTouching(true); store.history?.beginDrag(); } },
+    onPanMove(c) { if (closingSid() < 0) store.history?.drag(-c.fdy * 2); },
+    onPanEnd(c) { setTouching(false); store.history?.endDrag(-c.vy * 2); },
+    onTap() { setTouching(false); store.history?.endDrag(0); },
+    onCancel() { setTouching(false); store.history?.stop(); },
+  });
+
   return (
     <>
       <TermGrid
@@ -248,11 +248,32 @@ export default function TermApp() {
           </View>
 
           <View ref={node => pagesNode = node} class="absolute left-0 right-0 top-[30] h-[24] flex-row items-center justify-between">
-            <Text class="text-xs text-[#5d708c]">← tabs</Text>
-            <Text class="text-xs text-[#9fb6d8]">{`80×24 · ${page() + 1}/${Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE))}`}</Text>
+            <Text class="text-xs text-[#5d708c]">{`← ${page() + 1}/${Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE))}`}</Text>
+            <Text class="text-xs text-[#9fb6d8]">{`${FONT_LABELS[FONT_NAMES[fontIndex()]]} · 80×24`}</Text>
             <Text class="text-xs text-[#5d708c]">tabs →</Text>
           </View>
-          <Text class="absolute left-[4] right-[4] top-[88] text-xs text-[#e0b060]">{store.status()}</Text>
+          <View ref={touchpad} debugName="HistoryTouchpad" class="absolute left-[4] top-[56] w-[191] h-[50] rounded-[4] border border-[#34465c] overflow-hidden" style={{ bgColor: touching() ? 0xff3d2c1e : 0xff211a14 }}>
+            <Text ref={scrollLabel} class="absolute left-[7] top-[5] w-[177] h-[14] text-xs text-[#9fb6d8]">live · flick to scroll</Text>
+            <View class="absolute left-[69] top-[29] w-[50] h-[1] bg-[#43566b]" />
+            <View class="absolute left-[77] top-[34] w-[34] h-[1] bg-[#43566b]" />
+            <Text class="absolute left-[7] bottom-[3] text-xs text-[#5d708c]">{store.status().slice(0, 27)}</Text>
+          </View>
+          <View class="absolute left-[202] top-[56] right-[3] h-[50] overflow-hidden">
+            <Text class="absolute left-0 top-0 text-xs text-[#8ba5c4]">right nub: arrows</Text>
+            <Text class="absolute left-0 top-[16] text-xs text-[#5d708c]">L/R: tabs · ZL: ctrl</Text>
+            <Text class="absolute left-0 top-[32] text-xs text-[#5d708c]">SELECT: new</Text>
+          </View>
+
+          <Keyboard
+            top={KB_TOP}
+            onChar={(ch) => {
+              store.sendText(ch);
+              setCtrlArmed(false);
+            }}
+            onKey={(name, ctrl, alt, shift) => store.sendKey(name, ctrl || ctrlHeld(), alt, shift)}
+            ctrlArmed={ctrlActive}
+            setCtrlArmed={setCtrlArmed}
+          />
           {/* Slides out from under the strip while a tab is held. */}
           <Show when={closeAnim() > 0}>
             <View
@@ -277,56 +298,6 @@ export default function TermApp() {
             </View>
           </Show>
 
-          {/* Both columns are anchored to their own edge instead of sharing a
-              flex row. A companion's name is whatever its machine is called —
-              the macOS default is "evandeMacBook-Pro" — and in a row that long
-              name widened the left column until it pushed the hints off the
-              320 px panel. Anchored, the hints cannot move, and the name is
-              given the width that is actually left over: measured, because the
-              hint beside it is the thing that decides it. */}
-          <View
-            class="absolute left-0 right-0 overflow-hidden"
-            style={{ insetT: TAB_H, height: KB_TOP - TAB_H }}
-          >
-            <Text
-              class={
-                store.conn() === "live"
-                  ? "absolute left-[8] text-xs text-[#61c16d]"
-                  : "absolute left-[8] text-xs text-[#c95c5c]"
-              }
-              style={{ insetT: HINT_TOP }}
-            >
-              {store.conn() === "live" ? "connected" : store.conn()}
-            </Text>
-            <Text
-              class="absolute left-[8] text-xs text-[#5d708c]"
-              style={{ insetT: HINT_TOP + HINT_LINE, insetR: hintWidth + 16 }}
-            >
-              {store.hostName() || "—"}
-            </Text>
-            <Text
-              class="absolute right-[8] text-xs text-[#3d4c63]"
-              style={{ insetT: HINT_TOP }}
-            >
-              {HINT_BUTTONS}
-            </Text>
-            <Text class="absolute right-[8] text-xs text-[#3d4c63]" style={{ insetT: HINT_TOP + HINT_LINE }}>
-              {store.dynamicGlyphs() > 0
-                ? `pad scrolls · ${store.dynamicGlyphs()} runtime glyphs`
-                : "pad scrolls history · A ⏎ · B ⌫"}
-            </Text>
-          </View>
-
-          <Keyboard
-            top={KB_TOP}
-            onChar={(ch) => {
-              store.sendText(ch);
-              setCtrlArmed(false);
-            }}
-            onKey={(name, ctrl, alt, shift) => store.sendKey(name, ctrl || ctrlHeld(), alt, shift)}
-            ctrlArmed={ctrlActive}
-            setCtrlArmed={setCtrlArmed}
-          />
         </View>
       </AuxiliarySurface>
     </>

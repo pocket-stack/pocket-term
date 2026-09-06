@@ -7,7 +7,10 @@ const root = resolve(ROOT, ".pocket/visual"); mkdirSync(root, { recursive: true 
 const manifest = JSON.parse(readFileSync(resolve(ROOT, "pocket.json"), "utf8"));
 manifest.id += ".qa"; manifest.app.output = "pocketterm-qa"; manifest.app.entry = "main.tsx";
 writeFileSync(resolve(root, "pocket.json"), JSON.stringify(manifest));
-writeFileSync(resolve(root, "main.tsx"), 'import "../../test/fixtures/screen.tsx";\n');
+const history = process.argv.includes("--history");
+writeFileSync(resolve(root, "main.tsx"), `import { mountFixture } from "../../test/fixtures/screen.tsx";\nmountFixture(${history});\n`);
 const planPath = resolve(root, "plan.json"); writeFileSync(planPath, JSON.stringify(resolve3dsBuildPlan(manifest)));
-process.env.POCKETJS_CAP_START = "40"; process.env.POCKETJS_CAP_N = "1";
+const captureFrame = Number(process.argv.find(arg => arg.startsWith("--frame="))?.slice(8) ?? (history ? 180 : 40));
+if (!Number.isInteger(captureFrame) || captureFrame < 0 || captureFrame > 10000) throw new Error("Invalid capture frame");
+process.env.POCKETJS_CAP_START = String(captureFrame); process.env.POCKETJS_CAP_N = "1";
 await build3ds([`--plan=${planPath}`, `--project-root=${root}`, "--capture"]);
