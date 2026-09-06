@@ -28,6 +28,10 @@ test("boundary observer handles split VT sequences without treating OSC/DCS data
   expect(observer.feed("\x1b[2Jprogress\r50%")).toBe(false);
   expect(observer.feed("\x1b[?104")).toBe(false); expect(observer.feed("9h\x1b[?1049l")).toBe(true);
   expect(observer.feed("\x1b")).toBe(false); expect(observer.feed("c")).toBe(true);
+  expect(observer.feed("\x1b]4;1;?\x07\x1b]10;?\x1b\\")).toBe(false);
+  expect(observer.feed("\x1b]4;1;#123")).toBe(false); expect(observer.feed("456\x07")).toBe(true);
+  expect(observer.feed("\x1b]104\x1b\\")).toBe(true);
+  expect(observer.feed("\x1b]4;" + "1;?;".repeat(100) + "1;#abcdef\x07")).toBe(true);
 });
 
 test("viewport demand prioritizes visible rows, stays bounded, and recycles only one slot per row crossed", () => {

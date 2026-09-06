@@ -24,4 +24,11 @@ test("pinned libghostty history addresses remain correct across native page prun
   assert.notEqual(reset.epoch, epoch); assert.throws(() => row(pinned, epoch), /expired/);
   epoch = reset.epoch; const alternate = write("\x1b[?1049hvim\x1b[?1049l");
   assert.notEqual(alternate.epoch, epoch); assert.equal(alternate.alternate, false);
+  m = write("\x1b[3J\x1b[H\x1b[31mR\x1b[0m\r\n" + "palette-row\r\n".repeat(30));
+  const colored = m.first, before = core.getScrollbackCell(history.offset(colored, m.epoch), 0).fgRgb;
+  const queried = write("\x1b]4;1;?\x07"); assert.equal(queried.epoch, m.epoch);
+  const recolored = write("\x1b]4;1;#123456\x07");
+  assert.notEqual(recolored.epoch, m.epoch);
+  assert.equal(core.getScrollbackCell(history.offset(colored, recolored.epoch), 0).fgRgb, 0x123456);
+  assert.notEqual(before, 0x123456);
 });

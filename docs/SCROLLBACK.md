@@ -28,6 +28,7 @@ pruning, rather than assuming its configured limit is an exact row count.
 | Output appended while reading history | Preserve the absolute reading position; new output remains below |
 | History pruned | Retain surviving row identities, rebase the scroll origin, clamp an expired position to the oldest available row |
 | Clear history, terminal reset, resize or alternate-screen transition | Change epoch, cancel stale loads and return to the current live screen |
+| Palette/default-color write or reset | Change epoch because existing cells can resolve to new colors; ordinary color queries retain the epoch |
 | Provider disconnected | Keep cached rows and the last live screen, mark the view offline, stop new reads |
 | Same session reconnects | Adopt the current manifest; preserve valid history and the reading anchor |
 | Terminal process/replica restarts | Discard uncertain input and cached delivery state; accept a fresh manifest |
@@ -38,6 +39,9 @@ observer recognizes destructive VT boundaries across split chunks and
 ignores escape-looking data in OSC/DCS strings. It does not interpret cells;
 Ghostty remains the parser. Checking counts only after parsing would miss a
 clear followed by enough output to reuse old indices with a larger count.
+The observer also retains a bounded OSC prefix to distinguish color changes
+from queries and titles. The native test confirms that a palette write
+recolors an existing historical cell even though its row count is unchanged.
 
 `term.history` is a read-only offload method, separate from the ordered
 `term.exchange` input stream. Every fragment repeats the epoch and row

@@ -11,8 +11,8 @@ baseline. The synchronization mechanism is documented in
 
 | Current check | Result |
 | --- | --- |
-| Guest and host types; unit suite | Passed: 50 tests, 1,427 assertions |
-| Native Ghostty history and real provider/PTYS | Passed: 2 integrations, including pruning, same-chunk clear/refill, reconnect and saved Vim/Nano cursor edits |
+| Guest and host types; unit suite | Passed: 50 tests, 1,432 assertions |
+| Native Ghostty history and real provider/PTYS | Passed: 2 integrations, including pruning, same-chunk clear/refill, palette invalidation, reconnect and saved Vim/Nano cursor edits |
 | All three generated atlases | Reproduction matched; ASCII is 1:1 source bitmap coverage with 5px advance |
 | Production 3DS launcher/package | Built; expected app key path present and capture marker absent |
 | macOS mirror | Guest and release desktop host built |

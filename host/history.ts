@@ -8,20 +8,40 @@ import { HISTORY, type HistoryManifest } from "../shared/history.ts";
 export class HistoryBoundary {
   private state: "ground" | "escape" | "csi" | "string" | "string-escape" = "ground";
   private csi = "";
+  private osc: string | undefined;
+  private oscOverflow = false;
+  private finishString(): boolean {
+    const [code, ...params] = (this.osc ?? "").split(";");
+    this.osc = undefined;
+    // Palette/default-color writes reinterpret already stored cells. Color
+    // queries and titles must not repeatedly invalidate an editor's history.
+    return ["104", "110", "111"].includes(code) ||
+      code === "4" && (this.oscOverflow || params.some((value, n) => n % 2 === 1 && value !== "?")) ||
+      ["10", "11"].includes(code) && (this.oscOverflow || params.some(value => value !== "?" && value !== ""));
+  }
   feed(text: string): boolean {
     let reset = false;
     for (const ch of text) {
       if (this.state === "string" || this.state === "string-escape") {
-        if (ch === "\x07" || ch === "\x9c" || this.state === "string-escape" && ch === "\\") this.state = "ground";
-        else this.state = ch === "\x1b" ? "string-escape" : "string";
+        if (ch === "\x07" || ch === "\x9c" || this.state === "string-escape" && ch === "\\") {
+          if (this.finishString()) reset = true;
+          this.state = "ground";
+        } else {
+          if (ch !== "\x1b" && this.osc !== undefined) {
+            if (this.osc.length < 256) this.osc += ch;
+            else this.oscOverflow = true;
+          }
+          this.state = ch === "\x1b" ? "string-escape" : "string";
+        }
         continue;
       }
       if (ch === "\x18" || ch === "\x1a") { this.state = "ground"; continue; }
       if (ch === "\x1b") { this.state = "escape"; continue; }
       if (ch === "\x9b") { this.state = "csi"; this.csi = ""; continue; }
+      if (ch === "\x9d") { this.state = "string"; this.osc = ""; this.oscOverflow = false; continue; }
       if (this.state === "escape") {
         if (ch === "[") { this.state = "csi"; this.csi = ""; }
-        else if ("]PX^_".includes(ch)) this.state = "string";
+        else if ("]PX^_".includes(ch)) { this.state = "string"; this.osc = ch === "]" ? "" : undefined; this.oscOverflow = false; }
         else { if (ch === "c") reset = true; this.state = "ground"; }
       } else if (this.state === "csi") {
         if (ch >= "@" && ch <= "~") {
