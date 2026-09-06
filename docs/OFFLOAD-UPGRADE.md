@@ -19,15 +19,26 @@ The mechanism and simulated baseline comparison are in
 | Native settings | Inspected; all three fonts and preview/speed controls fit |
 | Native provisional echo | Inspected; pending third character and underline appear before authoritative output |
 | Native inertial motion | Six consecutive frames inspected; unchanged pixels move 12, 11 and 10px in successive frames |
-| Physical deployment and interaction | Pending; ftpd refused the connection when the new package was ready |
+| Physical FTP deployment | Passed: launcher and pairing key read back byte-identically on 2026-09-06 at 23:23 UTC |
+| Physical revision acceptance | Pending fresh launch and input/scrolling tests |
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
 | pocketterm-main.3dsx | 2,024,192 | `b349e7e97590e4d97bc43e53da9f1735fd979f65ce8dd5e7970bbda7b244355d` |
 | pocketterm-main.pocket | 721,736 | `a486a182e912b9513b914ecaecf2e5c69b1c1d889c08db3de272e8a69aa47494` |
 
-The new launcher and companion must be upgraded together. The existing
-protocol-4 worker and user PTYs have been left running while awaiting FTP.
+**The protocol-5 launcher is installed at `/3DS/pocketterm-main.3dsx`.**
+The previous launcher was backed up and verified at
+`/pocketjs/runtime/native-backups/pocketterm-main-6f65c3a374681c11.3dsx`.
+The receipt is `.pocket/last-deploy.json`; its installed hash matches the
+artifact above. The new Mac terminal worker and provider are running,
+waiting for the console to leave ftpd and launch Pocket Term.
+
+The protocol-4 supervisor and provider were stopped while the old durable
+worker and its existing PTY were preserved. That session is not migrated
+into the protocol-5 worker. Preservation details are in
+`.pocket/retired-protocol4-daemon.json`; the new trace is
+`.pocket/responsive-daemon.log`.
 The native fixtures establish rendering behavior, not physical frame rate.
 
 ## Cached scrollback baseline
@@ -64,11 +75,11 @@ These deterministic emulator frames do not establish physical frame rate.
 | pocketterm-main.3dsx | 1,937,872 | `6f65c3a374681c1151175fc088e00ea8727df70c060e46a315f3a7d70f377c8f` |
 | pocketterm-main.pocket | 635,416 | `fc3180add555cc7a5cf7136162a49f21007807650d2c411a36853cc82c1502c5` |
 
-**The protocol-4 launcher is installed at `/3DS/pocketterm-main.3dsx`.**
+**The protocol-4 launcher was installed at `/3DS/pocketterm-main.3dsx`.**
 The previous launcher was backed up and verified at
 `/pocketjs/runtime/native-backups/pocketterm-main-9f4a08ce175b4af4.3dsx`.
-The FTP receipt is `.pocket/last-deploy.json`; the installed hash matches
-the baseline artifact above.
+Its FTP readback matched the baseline artifact above. The latest
+`.pocket/last-deploy.json` now records the protocol-5 deployment.
 
 After this baseline deployment, the Mac companion waited for the console
 to leave ftpd. The previous provider was stopped while its durable terminal worker
