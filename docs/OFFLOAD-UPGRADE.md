@@ -18,10 +18,12 @@ baseline. The synchronization mechanism is documented in
 | macOS mirror | Guest and release desktop host built |
 | Native font/layout frame | Inspected at 80×24; Spleentt, full-width last column and bottom touchpad |
 | Native delayed-history frame 180 | Inspected: translated rows retain identity, missing rows show skeletons |
+| Native settled-history frame 360 | Inspected: missing rows filled, consecutive row identities and the reading anchor preserved |
 | Physical revision acceptance | Pending FTP availability and fresh stick/touch/font testing |
 
 [Native font/layout](terminal-80x24.png), [history while loading](history-loading.png),
-and [font comparison at 1:1](font-comparison.png) are retained as review artifacts.
+[history after filling](history-settled.png), and
+[font comparison at 1:1](font-comparison.png) are retained as review artifacts.
 The font study compares the previous antialiased face with Spleen, Spleentt and
 Fusion; the native fixture verifies the selected face through the 3DS renderer.
 These deterministic emulator frames do not establish physical frame rate.

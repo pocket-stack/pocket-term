@@ -99,7 +99,8 @@ Pico. This proves escape/input behavior, not the physical nub's feel.
 
 `bun run visual --history` builds a separate native capture fixture. It
 injects analog input while history replies arrive with variable frame
-delays. `bun run visual` builds the static 80-column font/layout fixture.
+delays. Add `--frame=360` to capture after the visible rows have filled.
+`bun run visual` builds the static 80-column font/layout fixture.
 Neither fixture is a production launcher or evidence of physical frame rate.
 
 [Superlogical's public material](https://www.superlogical.com/) describes durable sessions, native history

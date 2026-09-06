@@ -1,0 +1,2 @@
+assets/fonts/**/*.bdf linguist-vendored=true
+app/font.generated.ts linguist-generated=true
