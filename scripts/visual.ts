@@ -1,0 +1,13 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { resolve3dsBuildPlan } from "../vendor/pocketjs/tools/3ds-profile.ts";
+import { build3ds } from "../vendor/pocketjs/tools/3ds.ts";
+import { ROOT } from "./paths.ts";
+const root = resolve(ROOT, ".pocket/visual"); mkdirSync(root, { recursive: true });
+const manifest = JSON.parse(readFileSync(resolve(ROOT, "pocket.json"), "utf8"));
+manifest.id += ".qa"; manifest.app.output = "pocketterm-qa"; manifest.app.entry = "main.tsx";
+writeFileSync(resolve(root, "pocket.json"), JSON.stringify(manifest));
+writeFileSync(resolve(root, "main.tsx"), 'import "../../test/fixtures/screen.tsx";\n');
+const planPath = resolve(root, "plan.json"); writeFileSync(planPath, JSON.stringify(resolve3dsBuildPlan(manifest)));
+process.env.POCKETJS_CAP_START = "40"; process.env.POCKETJS_CAP_N = "1";
+await build3ds([`--plan=${planPath}`, `--project-root=${root}`, "--capture"]);

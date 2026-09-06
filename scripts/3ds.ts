@@ -26,10 +26,11 @@ writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
 await build3ds([`--plan=${planPath}`, `--project-root=${ROOT}`, ...process.argv.slice(2)]);
 
 mkdirSync(DIST_3DS, { recursive: true });
+const pocketOnly = process.argv.includes("--pocket-only");
 const produced = [
   resolve(VENDOR, `dist/3ds/${plan.app.output}.pocket`),
-  resolve(VENDOR, `dist/3ds/${plan.app.output}.3dsx`),
-  resolve(VENDOR, `dist/3ds/${plan.app.output}.cia`),
+  ...(!pocketOnly ? [resolve(VENDOR, `dist/3ds/${plan.app.output}.3dsx`)] : []),
+  ...(process.argv.includes("--cia") ? [resolve(VENDOR, `dist/3ds/${plan.app.output}.cia`)] : []),
 ].filter((path) => existsSync(path));
 for (const path of produced) {
   const destination = resolve(DIST_3DS, basename(path));

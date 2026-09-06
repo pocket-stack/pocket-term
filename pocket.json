@@ -8,6 +8,7 @@
   "engine": {
     "capabilities": {
       "requires": [
+        "io.offload",
         "text.glyphs.baked",
         "input.buttons",
         "display.auxiliary",
@@ -22,9 +23,6 @@
     "entry": "app/main.tsx",
     "output": "pocketterm-main",
     "framework": "solid",
-    "companions": [
-      "term"
-    ],
     "surfaces": {
       "auxiliary": {
         "fixed": {

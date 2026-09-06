@@ -12,8 +12,8 @@
 
 import { For, Show } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
-import { getOps } from "@pocketjs/framework";
-import { THEME_CURSOR, THEME_FG, isDynamicSlot, runColumns, type Run } from "./protocol.ts";
+import { getOps } from "@pocketjs/framework/host";
+import { THEME_CURSOR, THEME_FG, isDynamicSlot, runColumns, type Run } from "../shared/protocol.ts";
 import { rgbToAbgr, type TermStore } from "./store.ts";
 
 export interface GridMetrics {
@@ -51,7 +51,7 @@ function connectionLabel(store: TermStore): string {
     case "no-svc":
       return "this host has no companion channel";
     case "search":
-      return "searching for the companion beacon (UDP 8621)…";
+      return "waiting for the paired Mac…";
     case "link":
       return "companion linked — waiting for a session…";
     case "live":
@@ -82,7 +82,7 @@ export function TermGrid(props: GridProps) {
 
   return (
     <View debugName="TermScreen" class="relative w-full h-full bg-[#10151c] overflow-hidden">
-      <View
+      <Show when={m.statusH > 0}><View
         debugName="TermStatus"
         class={
           store.bell()
@@ -111,7 +111,7 @@ export function TermGrid(props: GridProps) {
         >
           ●
         </Text>
-      </View>
+      </View></Show>
 
       <Show when={cursorOn()}>
         <View

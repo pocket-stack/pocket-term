@@ -1,47 +1,18 @@
-// app/app.tsx — a remote terminal multiplexer for the 3ds-dev host.
-//
-// The Mac companion (host/serve.ts) owns the PTYs and an authoritative
-// terminal state machine per session; this app is a passive replica in the
-// zhongduan sense: attach delivers a full cell-grid snapshot, then ordered
-// row diffs. The two screens split the terminal the way the contacts demo
-// split the phone app: the top screen is the grid (grid.tsx, shared with the
-// desktop mirror window) and the touch screen holds the session tabs and the
-// keyboard.
-//
-// Physical controls: D-pad = arrow keys (with repeat), A = Enter,
-// B = Backspace, X = Tab, Y = Space, START = Ctrl-C, SELECT = new session,
-// circle pad = scrollback.
-//
-// ZL is Ctrl: hold it and every key that follows carries the control
-// modifier, with the on-screen keyboard lighting its Ctrl cap so the state is
-// visible where the operator is already looking. ZL is New-3DS-only and
-// reaches the guest through ir:rst rather than the ordinary HID pad
-// (hosts/3ds/src/input.c); a console without it uses the keyboard's own Ctrl
-// cap, which arms for one key.
-//
-// L and R step between sessions, and that is all they do. They briefly
-// doubled as the modifier, which meant discriminating a tap from a hold —
-// and a shoulder that only switches when released is a shoulder that feels
-// broken. One button, one job.
+// 3DS terminal: the full primary surface is a grid; the auxiliary surface
+// owns session navigation, connection status and incremental keyboard input.
 
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { analogY, onFrame } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
-import { getOps } from "@pocketjs/framework";
+import { getOps } from "@pocketjs/framework/host";
 import { TermGrid } from "./grid.tsx";
 import { KB_H, Keyboard } from "./keyboard.tsx";
-import { connectSvc } from "./svc.ts";
+import { connectTermOffload } from "./offload.ts";
+import { loadTerminalFont } from "./font.ts";
+import { TERM_LAYOUT, TABS_PER_PAGE, tabPage } from "../shared/layout.ts";
 import { createTermStore } from "./store.ts";
-
-/* Grid geometry. The 12 px mono atlas is slot 16 (spec MONO_FONT_PX);
- * `font-mono text-xs` in grid.tsx is what makes the build bake it. The
- * natural advance (~7.2 px) is snapped down to a 7 px integer cell with
- * negative tracking so every column lands on a pixel. */
-const MONO_SLOT = 16;
-const STATUS_H = 14;
-const CELL_H = 13;
 
 const TAB_H = 26;
 const TAB_W = 72;
@@ -80,16 +51,17 @@ const DPAD_REPEAT = 4;
 
 export default function TermApp() {
   const ops = getOps();
-  const advance = ops.measureText("M", MONO_SLOT);
-  // What the hint occupies is what the host name cannot have.
+  loadTerminalFont();
+  const { cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H } = TERM_LAYOUT;
   const hintWidth = Math.ceil(ops.measureText(HINT_BUTTONS, HINT_SLOT));
-  const CELL_W = advance > 0 ? Math.max(6, Math.round(advance)) : 7;
-  const TRACK = advance > 0 ? CELL_W - advance : 0;
-  const COLS = Math.floor(400 / CELL_W);
-  const ROWS = Math.floor((240 - STATUS_H) / CELL_H);
-
-  const svc = connectSvc();
-  const store = createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, svc);
+  const store = createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, connectTermOffload());
+  onCleanup(() => store.dispose());
+  const [page, setPage] = createSignal(0);
+  const visibleSessions = () => store.sessions().slice(page() * TABS_PER_PAGE, (page() + 1) * TABS_PER_PAGE);
+  createEffect(() => {
+    const at = store.sessions().findIndex(s => s.sid === store.activeSid());
+    setPage(tabPage(at));
+  });
   /** The touch keyboard's one-shot Ctrl: armed by its cap, spent by the next
    *  key. Holding L is the other way in, and the cap lights for both. */
   const [ctrlArmed, setCtrlArmed] = createSignal(false);
@@ -156,13 +128,19 @@ export default function TermApp() {
   // Session tab strip on the touch screen: tap a tab to attach, hold one to
   // arm closing it, the trailing + to open one.
   let tabsNode: NodeMirror | undefined;
+  let pagesNode: NodeMirror | undefined;
+  createGesture({ surface: "auxiliary", region: { node: () => pagesNode }, onTap: contact => {
+    const count = Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE));
+    if (contact.x < 90) setPage(p => (p - 1 + count) % count);
+    else if (contact.x > 230) setPage(p => (p + 1) % count);
+  } });
   /** The session the close bar is armed for, and how far the bar has slid. */
   const [closingSid, setClosingSid] = createSignal(-1);
   const [closeAnim, setCloseAnim] = createSignal(0);
   const [overClose, setOverClose] = createSignal(false);
   const inCloseBar = (y: number) => y >= TAB_H && y < TAB_H + CLOSE_BAR_H;
   const sessionAt = (x: number) => {
-    const list = store.sessions();
+    const list = visibleSessions();
     const index = Math.floor(x / TAB_W);
     return index >= 0 && index < list.length ? list[index] : undefined;
   };
@@ -197,7 +175,7 @@ export default function TermApp() {
         return;
       }
       // A plain tap: the tabs, then the trailing cell that opens one.
-      const list = store.sessions();
+      const list = visibleSessions();
       const session = sessionAt(contact.x);
       if (session) {
         store.attach(session.sid);
@@ -221,7 +199,7 @@ export default function TermApp() {
         store={store}
         metrics={{ cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H }}
         badge={`${COLS}×${ROWS}`}
-        hint="on the Mac: node host/serve.ts"
+        hint="Connect the paired Mac to continue"
         emptyHint="SELECT opens one · or tap + on the touch screen"
         title="POCKET TERM"
       />
@@ -235,7 +213,7 @@ export default function TermApp() {
             class="absolute left-0 right-0 top-0 flex-row bg-[#141a24]"
             style={{ height: TAB_H }}
           >
-            <For each={store.sessions()}>
+            <For each={visibleSessions()}>
               {(session) => (
                 <View
                   class={
@@ -269,6 +247,12 @@ export default function TermApp() {
             </View>
           </View>
 
+          <View ref={node => pagesNode = node} class="absolute left-0 right-0 top-[30] h-[24] flex-row items-center justify-between">
+            <Text class="text-xs text-[#5d708c]">← tabs</Text>
+            <Text class="text-xs text-[#9fb6d8]">{`80×24 · ${page() + 1}/${Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE))}`}</Text>
+            <Text class="text-xs text-[#5d708c]">tabs →</Text>
+          </View>
+          <Text class="absolute left-[4] right-[4] top-[88] text-xs text-[#e0b060]">{store.status()}</Text>
           {/* Slides out from under the strip while a tab is held. */}
           <Show when={closeAnim() > 0}>
             <View
@@ -339,7 +323,7 @@ export default function TermApp() {
               store.sendText(ch);
               setCtrlArmed(false);
             }}
-            onKey={(name, ctrl) => store.sendKey(name, ctrl || ctrlHeld())}
+            onKey={(name, ctrl, alt, shift) => store.sendKey(name, ctrl || ctrlHeld(), alt, shift)}
             ctrlArmed={ctrlActive}
             setCtrlArmed={setCtrlArmed}
           />

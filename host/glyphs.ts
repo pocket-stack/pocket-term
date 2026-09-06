@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 import opentype, { type Font } from "opentype.js";
 import { bakeSlot } from "../vendor/pocketjs/framework/compiler/bake-font.ts";
 import { FONT_CMAP_ENTRY_SIZE, FONT_HEADER_SIZE } from "../vendor/pocketjs/contracts/spec/spec.ts";
-import { DYNAMIC_SLOTS, TERM_GLYPHS } from "../app/protocol.ts";
+import { DYNAMIC_SLOTS, TERM_GLYPHS } from "../shared/protocol.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -166,7 +166,7 @@ function loadFont(paths: readonly string[]): { font: Font; path: string } | null
 const MAX_GLYPHS = 224;
 /** Nothing below this is legible; a too-small glyph still beats one that
  *  paints over the column beside it. */
-const MIN_PX = 7;
+const MIN_PX = 4;
 
 export interface BakedDynamicAtlas {
   slot: number;

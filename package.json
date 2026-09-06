@@ -16,8 +16,12 @@
     "daemon": "node host/serve.ts",
     "push": "bun scripts/push.ts",
     "probe": "bun scripts/probe.ts",
-    "typecheck": "bun vendor/pocketjs/node_modules/typescript/bin/tsc --noEmit",
-    "test": "bun test test/host.test.ts",
-    "check": "bun run typecheck && bun run test"
+    "typecheck": "bun vendor/pocketjs/node_modules/typescript/bin/tsc --noEmit && bun vendor/pocketjs/node_modules/typescript/bin/tsc --noEmit -p host/tsconfig.json",
+    "test": "bun test --conditions=browser test/host.test.ts test/exchange.test.ts test/store.test.ts test/layout.test.ts",
+    "check": "bun run typecheck && bun run test",
+    "font": "bun scripts/font.ts",
+    "test:pty": "node --test test/pty.integration.ts",
+    "visual": "bun scripts/visual.ts",
+    "deploy": "bun scripts/deploy.ts"
   }
 }

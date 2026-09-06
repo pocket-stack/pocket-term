@@ -18,18 +18,16 @@ first, and this repository moves its pin.
 ## The loop
 
 ```sh
-bun run check                        # typecheck + host tests
-bun run push --host <console-ip>     # rebuild the guest, hot-push it (~20 s)
-bun run probe --host <console-ip>    # status, stats, tree, screenshot
-bun run 3ds                          # the full .3dsx — needed for a reflash
-bun run daemon --unicast <console-ip>
+bun run check
+bun run test:pty
+bun run 3ds
+bun run daemon --device <console-ip>
 ```
 
-`app/` and `mirror/` changes are hot pushes. A change under
-`vendor/pocketjs/hosts/3ds` is native: rebuild the `.3dsx`, copy it to the SD
-card, relaunch. **ftpd cannot run while Pocket Term does** — one homebrew
-application at a time — so a reflash needs the console back at the Homebrew
-Launcher.
+The pinned offload host reads its embedded guest and does not start the
+legacy development server. Rebuild and copy the `.3dsx` through ftpd for
+updates. `push` and `probe` apply only to the previous svc launcher.
+**ftpd cannot run while Pocket Term does**; return to HBL to transfer files.
 
 ## Things that have cost time
 
@@ -56,8 +54,13 @@ Launcher.
 - **A hot push restarts QuickJS but not the transport.** The daemon sees the
   same connection, so a `hello` resets per-replica delivery state — without
   that the fresh guest draws blanks where the old one drew CJK.
-- **TCP 8622 is usually taken** by another companion on this machine; the
-  daemon falls back to an ephemeral port and the beacon advertises it.
-- **Broadcast is filtered on many networks.** `--unicast <console-ip>` beacons
-  straight at the console; the device connects to the datagram's source
-  address at the advertised port.
+- **Terminal access uses paired io.offload.** `--device <console-ip>` (and
+  the legacy `--unicast` alias) selects the provider destination. PKNT is
+  loopback-only for Mac mirrors. `bun run pair` provisions both the existing
+  dev key and the app-specific offload key.
+- **Provider workers do not own PTYs.** They are destroyed on disconnect;
+  `host/session.ts` runs in the durable Node terminal process. Keep the shared
+  protocol in `shared/`, and preserve command ids across uncertain replies.
+- **The terminal atlas has a 5px advance.** Regenerate `app/font.generated.ts`
+  with `bun scripts/font.ts`; do not obtain 80 columns through negative
+  tracking of the old 12px font. Status belongs on the auxiliary screen.

@@ -13,7 +13,7 @@ import { createSignal, For } from "solid-js";
 import { Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
-import type { KeyName } from "./protocol.ts";
+import type { KeyName } from "../shared/protocol.ts";
 
 export const KEY_H = 26;
 export const KB_ROWS = 5;
@@ -25,9 +25,9 @@ export type KeyAction =
   | { ch: string; ctrl?: boolean }
   | { key: KeyName }
   | { layer: LayerName }
-  | { mod: "shift" | "ctrl" };
+  | { mod: "shift" | "ctrl" | "alt" };
 
-export type LayerName = "lower" | "upper" | "sym" | "sym2";
+export type LayerName = "lower" | "upper" | "sym" | "sym2" | "fn";
 
 interface KeyDef {
   label: string;
@@ -57,7 +57,7 @@ const ACTION_ROW: KeyDef[] = [
   key("esc", "Escape"),
   key("tab", "Tab"),
   { label: "ctl", w: 1, act: { mod: "ctrl" }, dark: true },
-  { label: "^C", w: 1, act: { ch: "c", ctrl: true }, dark: true },
+  { label: "alt", w: 1, act: { mod: "alt" }, dark: true },
   key("←", "Left"),
   key("↓", "Down"),
   key("↑", "Up"),
@@ -71,6 +71,12 @@ function charRow(chars: string): KeyDef[] {
 }
 
 const LAYERS: Record<LayerName, KeyDef[][]> = {
+  fn: [
+    [key("F1", "F1", 2), key("F2", "F2", 2), key("F3", "F3", 2), key("F4", "F4", 2), key("F5", "F5", 2)],
+    [key("F6", "F6", 2), key("F7", "F7", 2), key("F8", "F8", 2), key("F9", "F9", 2), key("F10", "F10", 2)],
+    [key("F11", "F11", 2), key("F12", "F12", 2), key("ins", "Insert", 2), key("del", "Delete", 2), key("home", "Home", 2)],
+    [layer("abc", "lower", 2), layer("?123", "sym", 2), key("end", "End", 2), key("tab", "Tab", 2), key("enter", "Enter", 2)],
+  ],
   lower: [
     charRow("qwertyuiop"),
     charRow("asdfghjkl'"),
@@ -91,7 +97,7 @@ const LAYERS: Record<LayerName, KeyDef[][]> = {
   ],
   sym2: [
     charRow("~`|\\{}<>\"'"),
-    charRow("/?*+-=%$#@"),
+    [layer("F1+", "fn", 2), ...charRow("*+-=%$#@")],
     [layer("?123", "sym", 1.5), ...charRow("&^!.,;"), k(":"), key("⌫", "Backspace", 1.5)],
     [layer("abc", "lower", 1.5), k("("), { label: "space", w: 4, act: { ch: " " } }, k(")"), k("."), key("⏎", "Enter", 1.5)],
   ],
@@ -126,7 +132,7 @@ export interface KeyboardProps {
   top: number;
   onChar: (ch: string) => void;
   /** `name` is a KeyName, or a single character when ctrl is held. */
-  onKey: (name: string, ctrl: boolean) => void;
+  onKey: (name: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
   /** One-shot Ctrl arms here; the next character key consumes it. */
   ctrlArmed: () => boolean;
   setCtrlArmed: (on: boolean) => void;
@@ -134,6 +140,7 @@ export interface KeyboardProps {
 
 export function Keyboard(props: KeyboardProps) {
   const [layerName, setLayerName] = createSignal<LayerName>("lower");
+  const [altArmed, setAltArmed] = createSignal(false);
   const [pressed, setPressed] = createSignal<string | null>(null);
   let rootNode: NodeMirror | undefined;
   let releaseTimer = 0;
@@ -143,20 +150,24 @@ export function Keyboard(props: KeyboardProps) {
     releaseTimer = 4;
     const act = hit.def.act;
     if ("ch" in act) {
-      if (act.ctrl || props.ctrlArmed()) {
-        props.onKey(act.ch, true);
+      if (act.ctrl || props.ctrlArmed() || altArmed()) {
+        props.onKey(act.ch, !!act.ctrl || props.ctrlArmed(), altArmed(), false);
+        setAltArmed(false);
         props.setCtrlArmed(false);
       } else {
         props.onChar(act.ch);
       }
       if (layerName() === "upper") setLayerName("lower"); // one-shot shift
     } else if ("key" in act) {
-      props.onKey(act.key, props.ctrlArmed());
+      props.onKey(act.key, props.ctrlArmed(), altArmed(), layerName() === "upper");
+      setAltArmed(false);
+      if (layerName() === "upper") setLayerName("lower");
       props.setCtrlArmed(false);
     } else if ("layer" in act) {
       setLayerName(act.layer);
     } else if ("mod" in act) {
       if (act.mod === "shift") setLayerName(layerName() === "upper" ? "lower" : "upper");
+      else if (act.mod === "alt") setAltArmed(!altArmed());
       else props.setCtrlArmed(!props.ctrlArmed());
     }
   };
@@ -197,6 +208,7 @@ export function Keyboard(props: KeyboardProps) {
             layer={layerName()}
             pressed={pressed()}
             ctrlArmed={props.ctrlArmed()}
+            altArmed={altArmed()}
           />
         )}
       </For>
@@ -239,6 +251,7 @@ function KeyboardRow(props: {
   layer: LayerName;
   pressed: string | null;
   ctrlArmed: boolean;
+  altArmed: boolean;
 }) {
   const defs = () => rowsFor(props.layer)[props.row];
   return (
@@ -249,7 +262,7 @@ function KeyboardRow(props: {
             .slice(0, index())
             .reduce((x, d) => x + d.w * UNIT, 0);
         const isPressed = () => props.pressed === `${props.row}:${index()}`;
-        const isArmedCtrl = () => "mod" in def.act && def.act.mod === "ctrl" && props.ctrlArmed;
+        const isArmedCtrl = () => "mod" in def.act && (def.act.mod === "ctrl" && props.ctrlArmed || def.act.mod === "alt" && props.altArmed);
         const down = () => isPressed() || isArmedCtrl();
         return (
           // The socket: a dark recess the cap sits in. Unpressed, the cap

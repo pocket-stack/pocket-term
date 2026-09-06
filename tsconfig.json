@@ -9,13 +9,32 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
-    "types": ["bun-types"],
+    "types": [
+      "bun-types"
+    ],
     "paths": {
-      "@pocketjs/framework": ["./vendor/pocketjs/framework/src/index.ts"],
-      "@pocketjs/framework/solid": ["./vendor/pocketjs/framework/src/index.ts"],
-      "@pocketjs/framework/input": ["./vendor/pocketjs/framework/src/input-api.ts"],
-      "@pocketjs/framework/*": ["./vendor/pocketjs/framework/src/*"]
+      "@pocketjs/framework": [
+        "./vendor/pocketjs/framework/src/index.ts"
+      ],
+      "@pocketjs/framework/solid": [
+        "./vendor/pocketjs/framework/src/index.ts"
+      ],
+      "@pocketjs/framework/input": [
+        "./vendor/pocketjs/framework/src/input-api.ts"
+      ],
+      "@pocketjs/framework/*": [
+        "./vendor/pocketjs/framework/src/*"
+      ],
+      "@pocketjs/framework/offload/provider": [
+        "./vendor/pocketjs/tools/offload-provider.ts"
+      ]
     }
   },
-  "include": ["app", "mirror", "scripts", "test"]
+  "include": [
+    "app",
+    "mirror",
+    "scripts",
+    "test",
+    "shared"
+  ]
 }

@@ -1,13 +1,12 @@
-// app/store.ts — the device-side replica state. The companion daemon
-// owns terminal truth; this store only applies ordered grid updates onto
-// per-row signals and turns UI intents into protocol lines. gen/seq guard the
-// one lossy hop (the svc line queue drops oldest under backlog): a gap asks
-// the host for a fresh snapshot instead of rendering from a hole.
+// Visible terminal replica. Completed grid generations commit atomically;
+// sequence gaps request a snapshot. PTYs and scrollback remain on the Mac.
 
-import { createSignal, type Accessor } from "solid-js";
-import { getOps } from "@pocketjs/framework";
+import { batch, createSignal, type Accessor } from "solid-js";
+import { getOps } from "@pocketjs/framework/host";
 import {
+  DYNAMIC_SLOTS,
   TERM_PROTO,
+  type ClientLine,
   type Cursor,
   type HostInputLine,
   type HostLine,
@@ -15,8 +14,8 @@ import {
   type Role,
   type Run,
   type SessionInfo,
-} from "./protocol.ts";
-import type { Svc } from "./svc.ts";
+} from "../shared/protocol.ts";
+import type { TermChannel } from "./channel.ts";
 
 export type ConnState = "no-svc" | "search" | "link" | "live";
 
@@ -70,10 +69,13 @@ export interface TermStore {
   /** Glyphs delivered at runtime for codepoints the build never baked; the
    *  count is what the status bar reports. */
   dynamicGlyphs: Accessor<number>;
+  status(): string;
+  dispose(): void;
+  paste(s: string): void;
   /** Pump the channel — call exactly once per frame. */
   frame(): void;
   sendText(s: string): void;
-  sendKey(k: KeyName | string, ctrl?: boolean, alt?: boolean): void;
+  sendKey(k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean): void;
   scroll(lines: number): void;
   newSession(): void;
   kill(sid: number): void;
@@ -90,7 +92,7 @@ export interface TermStoreOptions {
   role?: Role;
 }
 
-export function createTermStore(options: TermStoreOptions, svc: Svc | null): TermStore {
+export function createTermStore(options: TermStoreOptions, svc: TermChannel | null): TermStore {
   const { cols, rows, cell } = options;
   const role: Role = options.role ?? "device";
   const [conn, setConn] = createSignal<ConnState>(svc === null ? "no-svc" : "search");
@@ -101,12 +103,14 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
   const [scrollback, setScrollback] = createSignal(0);
   const [bell, setBell] = createSignal(false);
   const [dynamicGlyphs, setDynamicGlyphs] = createSignal(0);
+  const [status, setStatus] = createSignal("");
   const rowSignals = Array.from({ length: rows }, () => createSignal<Run[]>([]));
 
   let wasOpen = false;
   let gen = -1;
   let seq = -1;
   let sawGrid = false;
+  let staged: Map<number, Run[]> | undefined;
   let resyncCooldown = 0;
   let bellFrames = 0;
   /** Survives a reconnect so the console comes back to the session it was
@@ -120,6 +124,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
     gen: number;
     seq: number;
     parts: string[];
+    chars: number;
   }
   const atlasRx = new Map<number, AtlasRx>();
   const glyphCounts = new Map<number, number>();
@@ -137,21 +142,24 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
   };
 
   const applyAtlas = (line: Extract<HostLine, { t: "atlas" }>) => {
+    if (!(DYNAMIC_SLOTS as readonly number[]).includes(line.slot) || typeof line.b64 !== "string" || line.b64.length > 6144) return;
     let rx = atlasRx.get(line.slot);
     if (rx === undefined || line.gen !== rx.gen) {
       if (line.seq !== 0) return; // joined mid-bake; the next one starts clean
-      rx = { gen: line.gen, seq: -1, parts: [] };
+      rx = { gen: line.gen, seq: -1, parts: [], chars: 0 };
       atlasRx.set(line.slot, rx);
     }
     if (line.seq !== rx.seq + 1) {
-      atlasRx.delete(line.slot); // a gap; drop the bake and wait for the next
+      atlasRx.delete(line.slot);
+      requestResync();
       return;
     }
     rx.seq = line.seq;
-    rx.parts.push(line.b64);
+    if (rx.chars + line.b64.length > 262144) { atlasRx.delete(line.slot); requestResync(); return; }
+    rx.parts.push(line.b64); rx.chars += line.b64.length;
     if (line.more === 1) return;
     const blob = base64ToBytes(rx.parts.join(""));
-    rx.parts = [];
+    rx.parts = []; rx.chars = 0;
     const load = getOps().loadFontAtlas;
     if (!load || blob.length < 16) return;
     load(blob);
@@ -176,7 +184,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
       }
       gen = line.gen;
       seq = -1;
-      clearGrid();
+      staged = new Map();
     }
     if (line.seq !== seq + 1) {
       if (line.seq <= seq) return; // duplicate; TCP makes this a host bug
@@ -184,10 +192,16 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
       return;
     }
     seq = line.seq;
+    if (!staged) staged = new Map();
     for (const update of line.rows) {
       const [y, ...runs] = update;
-      if (y >= 0 && y < rows) rowSignals[y][1](runs);
+      if (y >= 0 && y < rows) staged.set(y, runs);
     }
+    if (line.more) return;
+    batch(() => {
+      for (const [y, runs] of staged!) rowSignals[y][1](runs);
+      staged = undefined;
+    });
     if (line.cur) setCursor(line.cur);
     if (line.sb !== undefined) setScrollback(line.sb);
     sawGrid = true;
@@ -195,15 +209,32 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
   };
 
   const sendText = (s: string) => {
-    if (s.length > 0) svc?.send({ t: "ch", s });
+    if (!wasOpen || activeSid() < 0) return;
+    if (s.length > 0 && s.length <= 256) svc?.send({ t: "ch", s });
   };
-  const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean) => {
+  const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean) => {
+    if (!wasOpen || activeSid() < 0) return;
     svc?.send({
       t: "key",
       k,
       ...(ctrl ? { ctrl: 1 as const } : {}),
       ...(alt ? { alt: 1 as const } : {}),
+      ...(shift ? { shift: 1 as const } : {}),
     });
+  };
+  const paste = (text: string) => {
+    if (!wasOpen || activeSid() < 0 || !text) return;
+    if (text.length > 8192) { setStatus("Paste exceeds 8192 characters"); return; }
+    const chunks: string[] = [];
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(text.length, at + 128);
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+      chunks.push(text.slice(at, end)); at = end;
+    }
+    const lines: ClientLine[] = chunks.map((s, i) => ({ t: "paste", s, phase: chunks.length === 1 ? "single" : i === 0 ? "start" : i === chunks.length - 1 ? "end" : "more" }));
+    if (svc?.sendBatch) svc.sendBatch(lines);
+    else lines.forEach(line => svc?.send(line));
   };
   const scroll = (lines: number) => {
     if (lines !== 0) svc?.send({ t: "scroll", d: lines });
@@ -211,6 +242,11 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
 
   const apply = (line: HostLine | HostInputLine) => {
     switch (line.t) {
+      case "transport-reset":
+        gen = -1; seq = -1; staged = undefined; sawGrid = false;
+        clearGrid(); atlasRx.clear(); glyphCounts.clear(); setDynamicGlyphs(0);
+        setConn("link");
+        break;
       case "hello":
         // The local host says hello too, with a viewport and no proto. Only
         // the companion's introduces the session.
@@ -229,10 +265,10 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
         sendText(line.s);
         break;
       case "key":
-        sendKey(line.k, line.ctl === true, line.alt === true);
+        sendKey(line.k, line.ctl === true, line.alt === true, line.sh === true);
         break;
       case "paste":
-        sendText(line.text);
+        paste(line.text);
         break;
       case "scroll":
         // A wheel notch is worth a line of history.
@@ -259,6 +295,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
           gen = -1;
           seq = -1;
           sawGrid = false;
+          staged = undefined;
           lastWanted = -1;
         }
         break;
@@ -294,8 +331,13 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
     scrollback,
     bell,
     dynamicGlyphs,
+    status,
+    dispose() { svc?.dispose?.(); atlasRx.clear(); },
+    paste,
     frame() {
       if (svc === null) return;
+      const transportStatus = svc.status?.() ?? "";
+      if (transportStatus) setStatus(transportStatus);
       if (resyncCooldown > 0) resyncCooldown -= 1;
       if (bellFrames > 0 && --bellFrames === 0) setBell(false);
       const open = svc.open();
@@ -305,6 +347,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
         gen = -1;
         seq = -1;
         sawGrid = false;
+        staged = undefined;
         atlasRx.clear();
         glyphCounts.clear();
         svc.send({

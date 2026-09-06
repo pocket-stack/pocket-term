@@ -1,10 +1,7 @@
-// host/grid.ts — cell resolution, run building and row chunking:
-// how the authoritative xterm buffer becomes the wire's Run/RowUpdate shapes.
-// Dependency-free on purpose — serve.ts feeds it real IBufferCells through
-// the structural XtermCellLike interface, tests feed it fakes, and the repo
-// typecheck gate never needs the daemon's native modules.
+// libghostty cells to bounded row runs; terminal colors and widths remain
+// authoritative. The renderer applies the resolved colors and cell geometry.
 
-import { LINE_BUDGET, THEME_BG, THEME_FG, type Run, type RowUpdate } from "../app/protocol.ts";
+import { LINE_BUDGET, THEME_BG, THEME_FG, type Run, type RowUpdate } from "../shared/protocol.ts";
 
 /** The slice of libghostty's CellData this module reads (@wterm/core). The
  *  core resolves colour itself — palette lookup, bright-bold, the configured
@@ -86,7 +83,7 @@ function halve(rgb: number): number {
  */
 export function resolveCell(cell: TerminalCell): Cell {
   const width = (cell.width ?? 1) as 0 | 1 | 2;
-  const raw = width === 0 ? "" : (cell.chars ?? String.fromCodePoint(cell.char || 32));
+  const raw = width === 0 ? "" : (cell.chars ?? String.fromCodePoint(cell.char || 32)).normalize("NFC");
   // Normalize the other spaces to the ordinary one here, so everything
   // downstream — run merging, glyph routing — sees a blank.
   const first = raw.codePointAt(0);

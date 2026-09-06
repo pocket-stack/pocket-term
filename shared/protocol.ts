@@ -1,8 +1,9 @@
-// app/protocol.ts — the terminal wire protocol, shared verbatim by the
+// shared/protocol.ts — the terminal wire protocol, shared verbatim by the
 // guest app (this directory) and the Mac companion daemon (host/serve.ts).
 //
-// The shape follows the svc mailbox contract (spec ops 30..32): JSON lines
-// both ways over one ordered connection. The companion holds the PTYs and an
+// The terminal worker emits bounded JSON lines
+// carried by authenticated offload exchanges (3DS) or loopback svc mirrors.
+// The companion holds the PTYs and an
 // authoritative terminal state machine per session; the device renders a
 // passive cell-grid replica. Attach delivers a full grid snapshot, everything
 // after arrives as ordered row diffs — reconnect/resync repeats the snapshot,
@@ -14,7 +15,7 @@
 
 /** The pocket-svc app id (manifest `companions`, PKNT handshake, beacon). */
 export const TERM_APP = "term";
-export const TERM_PROTO = 2;
+export const TERM_PROTO = 3;
 
 /** Keep every emitted line comfortably under SVC_POLL_BUF. */
 export const LINE_BUDGET = 6144;
@@ -126,7 +127,8 @@ export type ClientLine =
   | { t: "kill"; sid: number }
   | { t: "attach"; sid: number }
   | { t: "ch"; s: string }
-  | { t: "key"; k: string; ctrl?: 1; alt?: 1 }
+  | { t: "paste"; s: string; phase: "start" | "more" | "end" | "single" }
+  | { t: "key"; k: string; ctrl?: 1; alt?: 1; shift?: 1 }
   | { t: "scroll"; d: number }
   | { t: "resync" };
 
@@ -184,6 +186,7 @@ export type HostLine =
  * `proto`. Discriminating on `proto` is what keeps the two apart.
  */
 export type HostInputLine =
+  | { t: "transport-reset" }
   | { t: "hello"; w: number; h: number; epoch?: number }
   | { t: "ch"; s: string }
   | { t: "key"; k: string; sh?: boolean; alt?: boolean; ctl?: boolean; cmd?: boolean }
@@ -196,6 +199,8 @@ export type HostInputLine =
 
 /** Named keys the host encodes into PTY bytes (host/keys.ts). */
 export type KeyName =
+  | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12"
+  | "Insert"
   | "Enter"
   | "Backspace"
   | "Tab"

@@ -1,137 +1,143 @@
 # Pocket Term
 
-A remote terminal multiplexer for the **Nintendo 3DS**. Your shells run on the
-Mac; the console is a replica of one of them, drawn at 57×17 on the top screen
-with a touch keyboard on the bottom.
+Pocket Term controls **macOS PTY sessions from a Nintendo 3DS**. The top
+screen displays **80 columns × 24 rows**, using a **5px monospace advance
+and 10px row height** across its entire 400×240 display. The touch screen
+contains session tabs, connection status and the keyboard.
 
-<img src="docs/console.png" width="400" alt="Pocket Term on a Nintendo 3DS: a colourized directory listing and a CJK line on the top screen, tab bar and touch keyboard on the bottom" />
+<img src="docs/terminal-80x24.png" width="400" alt="Pocket Term's native 3DS renderer: 80 by 24 terminal grid, paged sessions and touch keyboard" />
 
-The handheld runs no shell and owns no terminal state. A companion daemon on
-the Mac owns the PTYs and one authoritative
-[libghostty](https://github.com/ghostty-org/ghostty) core per session, resolves
-every SGR sequence to concrete RGB, and sends the console rows of coloured
-cells. The console sends keys back. That split is what lets a handheld from 2011
-sit in front of a modern terminal program — including one whose UI is mostly
-box drawing and CJK.
+This screenshot uses a deterministic fixture in Azahar. It verifies the
+native renderer and layout; it is separate from physical device acceptance.
 
-Built on [PocketJS](https://github.com/pocket-stack/pocketjs): the guest is a
-Solid application compiled to a native package, and the same guest code draws
-the mirror windows on macOS and Linux.
+## Architecture
 
-## How it works
+The paired connection uses PocketJS's **io.offload** service. Following
+[Pocket Doc](https://github.com/pocket-stack/pocket-doc/tree/edd774b)'s provider
+pattern, the handheld performs no filesystem, PTY, terminal parsing or font
+rasterization work. Its visible rows and delivery queues have fixed limits.
 
 ```text
-Mac (host/serve.ts, Node)                3DS (app/, PocketJS)
-├─ node-pty        one PTY per session   ├─ Solid UI at 60 Hz, 57×17 cells
-├─ libghostty WASM the authoritative     ├─ passive replica: applies row
-│                  screen + scrollback   │   diffs, never interprets escapes
-├─ resolves SGR → 0xRRGGBB runs          ├─ touch keyboard, one contact
-├─ bakes glyphs the device lacks into    ├─ tabs: SELECT new, L/R switch,
-│  spare font slots, streams them        │   long-press-and-slide to close
-└─ opens one mirror window per session   └─ hold ZL for Ctrl (New 3DS)
-        │                                          │
-        └────────── SVC WIRE (PKNT) over TCP ──────┘
-             UDP 8621 beacon carries the TCP port
+3DS Solid UI → PocketJS offload → Bun provider worker
+                                  ↓ authenticated loopback capability
+                           Node terminal worker
+                           ├─ session registry + bounded replica queues
+                           ├─ node-pty + libghostty per session
+                           ├─ scrollback + dynamic glyph rasterization
+                           └─ loopback PocketJS desktop mirrors
 ```
 
-**The console is a replica, not a client.** On attach it gets a full snapshot;
-after that, ordered row diffs behind a `gen`/`seq` fence. A replica that misses
-a sequence asks for a resync rather than guessing, so a dropped frame can never
-leave the screen subtly wrong — the failure mode of a terminal that reconnects
-into the middle of a stream.
+**The Node terminal process owns sessions across provider reconnects.**
+PocketJS destroys a connection's provider worker on disconnect; the separate
+Node process keeps the PTYs and terminal state. Node is also required by
+node-pty on macOS. The supervisor starts both processes and closes their
+children when it exits.
 
-**Glyphs arrive at runtime.** The app ships baked Latin and the full
-U+2500–U+259F box and block ranges. Anything else a session prints — CJK,
-`⏺`, `⎿` — is rasterized on the Mac into a font atlas for one of the device's
-spare slots and streamed over the same wire, advances rewritten so a
-double-width character lands on two columns.
+**Each input command carries a monotonically increasing id.** A lost reply
+can be retried with the same id. The terminal worker consumes it once and
+retains each output fragment until the guest acknowledges it. A changed
+worker or replica epoch discards uncertain input and resets the grid.
+Screen output coalesces while delivery is pending; terminal bytes continue
+to feed libghostty on the Mac. Completed grid updates commit together.
 
-**One window per session on the Mac.** Each is the mirror guest (`mirror/`)
-running on the stock PocketJS desktop host, attached to the same daemon over
-the same protocol as the console. It is a second replica, not a second
-implementation: `app/grid.tsx` draws both. Typing into it goes to the same PTY.
+The shared protocol is in `shared/protocol.ts`; geometry and queue budgets
+are in `shared/layout.ts` and `shared/exchange.ts`. The live terminal stream
+uses ordered delivery rather than immutable document tile caching.
 
-<img src="docs/mirror.png" width="400" alt="The Pocket Term mirror window on macOS" />
+**Desktop mirrors share the same PTY and grid renderer.** Each window gets
+a dedicated loopback listener bound to its session, so concurrent window
+startup cannot exchange sessions. Mirrors accept keyboard input and paste;
+they do not open, close, resize or switch sessions. No terminal listener is
+exposed on the LAN. The 3DS connects through its app-specific pairing key.
 
-## The keyboard
+## Controls
 
-<img src="docs/keyboard.png" width="640" alt="The Pocket Term touch keyboard: key caps set into dark sockets" />
+| Control | Action |
+| --- | --- |
+| A / B / X / Y | Enter / Backspace / Tab / Space |
+| D-pad | Terminal arrows, with repeat |
+| Circle pad | Scrollback |
+| START | Ctrl-C |
+| SELECT / touch + | New session |
+| L / R | Previous / next session |
+| Hold ZL | Ctrl on supported hardware |
+| Touch tab | Attach to that session |
+| Hold tab, slide down, release | Close that session |
+| Touch page arrows | Navigate all session tabs |
+| `?123` → `#{~` → `F1+` | Function keys, Insert, Delete, Home and End |
 
-The bottom screen is a resistive panel that reports one contact, so the
-keyboard is built around the phone conventions that work with a single finger:
-one-shot Shift and Ctrl, a layer key for symbols, and an action strip for the
-keys a terminal needs (Esc, Tab, ^C, arrows, paging). Keys are caps set into
-sockets; pressing sinks the cap and turns its light around.
+Shift, Ctrl and Alt can be armed on the touch keyboard. Named keys preserve
+modifiers and application cursor mode; shifted Tab sends back-tab. Desktop
+paste is explicit and buffered until complete, with bracketed paste markers
+when the foreground program requests them. Typing multiple characters is
+never interpreted as an implicit paste.
 
-Hardware buttons cover what you reach for most: **A** Enter, **B** Backspace,
-**X** Tab, **Y** Space, **START** ^C, **SELECT** a new session, **L/R** switch
-sessions, the d-pad scrolls history, and **ZL held** is Ctrl (ZL comes from
-`ir:rst`, so it needs a New 3DS or a Circle Pad Pro).
+The companion supports **32 sessions**, **8 offload replicas**, and
+**2,000 scrollback rows per session**. Each guest queues at most 64 commands
+and has one exchange in flight. Paste is bounded to 8,192 UTF-16 code units;
+a batch that does not fit is rejected before sending any of it. The Mac
+retains at most 256 Ki characters of output per replica. Inactive replicas
+expire after 30 minutes. At capacity, a replica idle for 15 seconds may be
+evicted to admit a reloaded guest; its PTYs remain in the session registry.
 
-## Requirements
+## Setup
 
-- A 3DS running the Homebrew Launcher, on the same network as the Mac
-- [Bun](https://bun.sh) and **Node ≥ 23.6** (the daemon runs under Node: Bun's
-  `node-pty` spawn helper hangs on macOS 26)
-- Docker, for the devkitARM half of the 3DS toolchain (fetched on first build)
-- The PocketJS checkout comes with the repository as `vendor/pocketjs`
-
-## Quick start
+The runtime pin is PocketJS main `1c0735fa`. Install Bun, Node ≥23.6, Docker
+and the PocketJS pinned Rust toolchain.
 
 ```sh
 git clone --recursive https://github.com/pocket-stack/pocket-term
 cd pocket-term
-bun run setup                     # vendor install, runtime links, daemon deps
+bun run setup
+PATH="$HOME/.cargo/bin:$PATH" bun run 3ds
+bun run mirror
 
-bun run 3ds                       # → dist/3ds/pocketterm-main.3dsx
-# copy it to the SD card under /3DS/ and launch it from the Homebrew Launcher
-
-bun run daemon                    # the Mac side: PTYs, terminal cores, beacon
+# Run ftpd on the 3DS for pairing and SD-card installation.
+bun run deploy --host 192.168.8.152
+# Backs up the old launcher, provisions its offload key, verifies FTP readback.
+# Exit ftpd, launch Pocket Term, then start the paired Mac provider:
+bun run daemon --device 192.168.8.152
 ```
 
-The console discovers the daemon by its UDP beacon and connects. The daemon
-takes `--port`, `--beacon-port`, `--name`, `--shell`, `--no-mirror` and
-`--unicast <ip>` — the last beacons directly at a console on a network that
-eats broadcast.
+`--unicast <ip>` remains an alias for `--device <ip>`. It now selects the
+paired offload destination instead of broadcasting a beacon. The supervisor
+also accepts `--key <file>` (default `.pocket/offload.key`), `--name`,
+`--shell`, `--cwd`, `--no-login`, `--no-mirror`, and `--trace`. The trace
+records command kinds and session changes without recording typed text. Without a device address,
+it starts only the local terminal service. Pairing keys stay in ignored
+files and are not printed in receipts.
 
-To iterate on the app without reflashing, pair once while the console is
-running ftpd, then hot-push the guest package:
+**Upgrading the previous svc build requires a new .3dsx installation and
+an offload key.** Its earlier development-service key does not enable the
+new transport. The app's runtime remains isolated at
+`/pocketjs/runtime/apps/22a222ca7b6bddb1/`; L+R+START returns to HBL.
+
+The pinned 3DS offload host boots its embedded package and does not run the
+legacy development server. **Updates require rebuilding and replacing the
+.3dsx through ftpd.** `push` and `probe` remain legacy svc-build tools; they
+cannot update or inspect this offload launcher.
+
+## Validation
 
 ```sh
-bun run pair --host 192.168.8.152   # once, with ftpd open on the console
-bun run push --host 192.168.8.152   # rebuild + push; the app keeps running
-bun run probe --host 192.168.8.152  # status, stats, tree, screenshot
+bun run check               # guest + host types, explicit unit tests
+bun run test:pty            # real provider workers, reconnects, PTYs and VT
+bun scripts/font.ts --check # deterministic shipped 5px atlas
+bun run 3ds                # production native build
+bun scripts/visual.ts      # separate native capture fixture
 ```
 
-A change under `vendor/pocketjs/hosts/3ds` is native and needs `bun run 3ds`
-plus a reflash; everything in `app/` and `mirror/` is a hot push.
+`test:pty` uses temporary files and shells. It runs the actual PocketJS
+provider and capability worker against a simulated native socket endpoint,
+then exercises the real Node PTYs and libghostty. The native capture fixture
+uses `pocketterm-qa.3dsx`; it never replaces the production launcher.
 
-## Layout
-
-```text
-app/       the console guest — grid, tabs, touch keyboard, replica store
-mirror/    the desktop guest — the same grid, one window per session
-host/      the Mac daemon — PTYs, libghostty cores, glyph baking, the wire
-test/      protocol, run-building and glyph-routing tests (bun run check)
-scripts/   build and device commands over the vendored PocketJS toolchain
-```
-
-`app/protocol.ts` is the contract both sides read: message shapes, the run
-encoding, and which codepoints the device can already draw.
-
-## Status
-
-`vendor/pocketjs` pins merged PocketJS main at `10aee589`. It includes the
-3DS companion transport, per-app recovery storage and the current HBL icon.
-**The build embeds independently drawn 24×24 and 48×48 icons**, using the
-same assets as Pocket Doc. Its runtime state lives under
-`/pocketjs/runtime/apps/22a222ca7b6bddb1/`; hold **L+R+START** to return to HBL.
-
-See [runtime upgrade validation](docs/RUNTIME-UPGRADE.md) for the checks and
-deployment receipt for this pin.
+See [upgrade validation](docs/OFFLOAD-UPGRADE.md) for results and the current
+physical acceptance boundary. [Earlier runtime validation](docs/RUNTIME-UPGRADE.md)
+records the previous 57×17 svc build, not this upgrade.
 
 ## License
 
-MIT. PocketJS is a separate project under its own license, and libghostty
-arrives through [`@wterm/ghostty`](https://www.npmjs.com/package/@wterm/ghostty)
-under its own.
+MIT. PocketJS and libghostty retain their own licenses. The generated terminal
+atlas derives from the vendored JetBrains Mono under the SIL Open Font License;
+its license is in `vendor/pocketjs/assets/fonts/LICENSE-JetBrainsMono.txt`.
