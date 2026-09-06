@@ -24,6 +24,9 @@ and resets the view.
 | Production .3dsx and .pocket | Built using the pinned nightly and devkitARM container |
 | macOS mirror | Guest bundle and release desktop host built |
 | Native capture | Azahar dual-screen pixels inspected at 80×24, with paged tabs and keyboard |
+| Physical FTP deployment | Launcher and app-specific offload key uploaded; both read back byte-identically |
+| Physical paired connection | Mac provider connected to the 3DS at TCP port 8741; the device sent `hello` and created an 80×24 zsh PTY |
+| Physical input and multiplexing | Fresh character/key, new, kill, attach and scroll requests observed; three 80×24 PTYs created and repeated session switching recorded |
 
 The integration test force-closes the connection after commands, reconnects
 the actual PocketJS provider, and resends the same command ids. A temporary
@@ -43,10 +46,30 @@ provider integration test. The decoded native capture is
 | pocketterm-main.3dsx | 1,844,656 | `9f4a08ce175b4af4e6f9c2a40de0710cc39bb5d6de44465b323209f727fc5580` |
 | pocketterm-main.pocket | 542,200 | `0d3fbec4f0fb72b05ade5d528dda861ded96a7f33da1d28964a252a4fe999a15` |
 
-**Physical deployment and interaction remain pending.** The upgrade needs
-the native launcher and an app-specific offload key. The pinned offload
-host starts its embedded package without the legacy dev server; hot push
-and dev-server screenshots are unavailable in this mode. Physical launch,
-paired requests, touch/shoulder input and HBL return are separate acceptance
-steps. The previous FTP receipt in `RUNTIME-UPGRADE.md` belongs to the older
+**Physical FTP deployment passed on 2026-09-06 at 17:49 UTC.** The launcher
+above was installed at `/3DS/pocketterm-main.3dsx` through ftpd on
+`192.168.8.102:5000`. Its app-specific key was installed at
+`/pocketjs/offload/22a222ca7b6bddb1.key`. Both files were downloaded again
+and compared byte-for-byte with their local originals. The previous launcher
+was backed up and verified at
+`/pocketjs/runtime/native-backups/pocketterm-main-1452e2723b5edc0f.3dsx`.
+The local receipt is `.pocket/last-deploy.json`; it contains no key material.
+
+**Physical launch, paired requests and fresh input passed.** The Mac provider
+has an established connection from `192.168.8.159` to the console at
+`192.168.8.102:8741`. Its trace records a device `hello`, an 80×24 zsh PTY,
+character/key requests followed by shell prompt updates, two `new` requests,
+one `kill`, 19 `attach` and 151 `scroll` requests by 17:54 UTC. Three 80×24
+PTYs were created and the device attached to each. Desktop mirrors attach
+through their session-specific loopback listeners. The local trace is
+`.pocket/offload-daemon.log`; the acceptance snapshot is
+`.pocket/last-hardware-run.json` and contains command kinds, not typed text.
+
+Physical screen readability, shoulder switching and HBL return still need
+confirmation. Device telemetry recorded a cumulative maximum CPU frame of
+316,584 microseconds and 137 frames over 16ms in the first 4,827 frames;
+the connection/input evidence does not establish consistently smooth frames.
+The pinned offload host starts its embedded package without the legacy dev
+server; hot push and dev-server screenshots are unavailable in this mode.
+The previous FTP receipt in `RUNTIME-UPGRADE.md` belongs to the older
 57×17 svc build.
