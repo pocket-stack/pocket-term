@@ -63,12 +63,27 @@ for text; it does not guess an editor's insertion or overwrite mode.
 
 A grid carries the input acknowledgement at snapshot creation. **An accepted
 PTY write alone is not proof of application echo.** Confirmation additionally
-requires matching cells and cursor. An unchanged pre-input screen waits up
-to 350ms; unknown or mismatched output revokes the prediction. At most 16
-hypotheses are retained, and learned confidence expires after two seconds
-without confirmation. Session/screen transitions, disconnects, resyncs and
+requires matching cells and cursor. An unchanged pre-input screen waits until
+the first frame past 350ms of virtual time; unknown or mismatched output
+revokes the prediction. At most 16 hypotheses are retained, and learned
+confidence stops enabling previews after two virtual seconds without
+confirmation. Session/screen transitions, disconnects, resyncs and
 unmodeled keys reset confidence. A silent password-like input path never
 trains echo. Settings can disable the preview.
+
+**Prediction reads the framework's `virtualNow()` clock in production and
+tests.** The framework advances this clock once at the start of each frame;
+input, authoritative confirmation and expiry in that transaction observe
+the same time. The store converts virtual seconds to milliseconds for the
+prediction model. Host-selected simulation rates retain the same time units.
+`Date.now()` would introduce unrecorded UTC time into replica state;
+`performance.now()` would still introduce unrecorded real elapsed time.
+
+These deadlines bound display hypotheses in simulation time. Pausing the
+frame pump pauses them, and running below the simulation rate extends their
+real duration. A requirement to expire after real elapsed time needs a host
+monotonic deadline delivered as a recorded event at a frame boundary. Network
+deadlines remain transport concerns; this display policy does not extend them.
 
 This follows the observed-echo approach described by
 [Mosh](https://mosh.org/#techinfo). Warp instead describes
@@ -101,12 +116,15 @@ A desktop Bun sample of 1,000 idle history frames with 144 loaded rows took
 61.15ms before and 3.11ms after. The repeatable invariant is **zero demand
 replans while idle**, tested directly; those desktop times do not predict
 3DS frame rate. Prediction tests cover confirmed prefixes, mismatches,
-timeouts, control transitions, non-echoing input and cell preservation.
+timeouts, control transitions, non-echoing input and cell preservation. Store
+tests drive the framework clock at 20Hz and 60Hz with wall-clock reads forbidden,
+checking preview expiry, confidence age and preservation of authoritative cells.
 
 Native fixtures are built with `bun run visual --history --motion`,
 `--settings` and `--preview`. They use the actual 3DS renderer, delayed mock
-replies and a virtual 60Hz prediction clock. The emulator's wall-clock speed
-does not consume the preview deadline. Production uses wall-clock time.
+replies and the same framework clock as production, with no fixture-specific
+prediction clock. The emulator's wall-clock speed does not consume the
+preview deadline.
 
 [Settings](responsive-settings.png), [provisional echo](responsive-preview.png)
 and [six consecutive motion frames](responsive-motion.gif) retain the pixels.

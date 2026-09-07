@@ -77,7 +77,7 @@ function push(line: HostLine) {
   take() { const at = responses.findIndex(r => r.at <= ticks); return at < 0 ? undefined : responses.splice(at, 1)[0].value; },
 };
 mount(() => {
-  const store = createTermStore({ cols: 80, rows: 24, cell: [5, 10], now: () => ticks * 1000 / 60 }, connectTermOffload());
+  const store = createTermStore({ cols: 80, rows: 24, cell: [5, 10] }, connectTermOffload());
   onFrame(() => {
     ticks++;
     while (deferred[0] && deferred[0].at <= ticks) push(deferred.shift()!.line);

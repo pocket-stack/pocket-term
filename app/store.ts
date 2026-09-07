@@ -2,6 +2,7 @@
 // sequence gaps request a snapshot. PTYs and scrollback remain on the Mac.
 
 import { batch, createMemo, createSignal, type Accessor } from "solid-js";
+import { virtualNow } from "@pocketjs/framework/clock";
 import { getOps } from "@pocketjs/framework/host";
 import {
   DYNAMIC_SLOTS,
@@ -96,13 +97,10 @@ export interface TermStoreOptions {
    *  advances and cell heights against it. */
   cell: [number, number];
   role?: Role;
-  /** Millisecond clock; deterministic native fixtures supply virtual time. */
-  now?: () => number;
 }
 
 export function createTermStore(options: TermStoreOptions, svc: TermChannel | null): TermStore {
   const { cols, rows, cell } = options;
-  const now = options.now ?? Date.now;
   const role: Role = options.role ?? "device";
   const [conn, setConn] = createSignal<ConnState>(svc === null ? "no-svc" : "search");
   const [hostName, setHostName] = createSignal("");
@@ -246,7 +244,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       if (line.sb !== undefined) setScrollback(line.sb);
       if (line.history) history?.adopt(line.sid, line.history);
       sawGrid = true;
-      prediction.authoritative(line.ack, now());
+      prediction.authoritative(line.ack, virtualNow() * 1000);
       setConn("live");
     });
   };
@@ -255,7 +253,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     if (!wasOpen || activeSid() < 0) return;
     if (s.length > 0 && s.length <= 256) {
       history?.goLive(); const line: ClientLine = { t: "ch", s }, id = svc?.send(line);
-      if (id && conn() === "live") prediction.input(line, id, now()); else prediction.reset();
+      if (id && conn() === "live") prediction.input(line, id, virtualNow() * 1000); else prediction.reset();
     }
   };
   const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean) => {
@@ -269,7 +267,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
       ...(shift ? { shift: 1 as const } : {}),
     };
     const id = svc?.send(line);
-    if (id && conn() === "live") prediction.input(line, id, now()); else prediction.reset();
+    if (id && conn() === "live") prediction.input(line, id, virtualNow() * 1000); else prediction.reset();
   };
   const paste = (text: string) => {
     if (!wasOpen || activeSid() < 0 || !text) return;
@@ -392,7 +390,7 @@ export function createTermStore(options: TermStoreOptions, svc: TermChannel | nu
     dispose() { history?.dispose(); svc?.dispose?.(); atlasRx.clear(); },
     paste,
     frame() {
-      prediction.frame(now());
+      prediction.frame(virtualNow() * 1000);
       if (svc === null) return;
       const transportStatus = svc.status?.() ?? "";
       if (transportStatus) setStatus(transportStatus);

@@ -7,7 +7,8 @@ const sameCursor = (a: Cursor | null, b: Cursor) => !!a && a[0] === b[0] && a[1]
 
 /** A display-only hypothesis. It never edits the authoritative grid or
  * history, never invents an input command, and requires two observed echoes
- * before showing that kind of action. Unknown input resets that confidence. */
+ * before showing that kind of action. Unknown input resets that confidence.
+ * All timestamps are virtual milliseconds supplied by the frame transaction. */
 export function createTypingPrediction(readRow: (y: number) => Run[], readCursor: () => Cursor | null,
   publish: (preview: TypingPreview | undefined) => void, cols = 80, rows = 24) {
   const confidence = new Map<string, number>();
