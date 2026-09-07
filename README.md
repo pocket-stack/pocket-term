@@ -213,7 +213,7 @@ Visual builds use a separate app id and `pocketterm-qa.3dsx` launcher. The
 controlled data; `test:pty` separately exercises real providers, shells,
 reconnects, history and saved Vim/Nano edits.
 
-The deployed protocol-6 build has been accepted in user testing. Reproducible
+The protocol-6 implementation has been accepted for merge. Reproducible
 checks, deployment hashes and the revision history are recorded in
 [validation](docs/OFFLOAD-UPGRADE.md). Simulated latency and emulator captures
 remain distinct from physical timing measurements.

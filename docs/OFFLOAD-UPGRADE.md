@@ -1,8 +1,8 @@
 # Paired terminal upgrade validation
 
-## Accepted protocol-6 build
+## Current protocol-6 validation
 
-**The user accepted the deployed build and authorized merging PR #2.** The
+**The user accepted the current changes and authorized merging PR #2.** The
 launcher containing the framework-clock prediction fix (`5434243`) was
 installed on 2026-09-07 at 01:20 UTC. Both the launcher and the app-specific
 pairing key were downloaded again and matched their local originals.
@@ -17,7 +17,7 @@ package bytes. It retained the unmodified upstream glyphs and licenses.
 | Font sources and generated atlases | Lossless source archives and byte-identical atlas reproduction |
 | Native preview | Frame 93 retained the unconfirmed third character and its five-pixel underline |
 | Physical deployment | Launcher and pairing key read back byte-identically |
-| User acceptance | Confirmed; merge authorized |
+| User decision | Changes accepted; merge authorized |
 
 | Deployed artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
