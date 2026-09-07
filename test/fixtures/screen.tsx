@@ -4,6 +4,7 @@ import { mount } from "@pocketjs/framework/solid";
 import { createTermStore } from "../../app/store.ts";
 import { connectTermOffload } from "../../app/offload.ts";
 import TermApp from "../../app/app.tsx";
+import { historyBatchReply } from "../../host/history-batch.ts";
 import { TERM_PROTO, type HostLine, type RowUpdate } from "../../shared/protocol.ts";
 const ruler = "1234567890".repeat(8);
 const rows: RowUpdate[] = Array.from({ length: 24 }, (_, y) => [y, [0, y === 0 || y === 23 ? ruler : `${String(y + 1).padStart(2, "0")}  ${[
@@ -43,6 +44,10 @@ function push(line: HostLine) {
   session: () => 1,
   submit(record: string) {
     const request = JSON.parse(record), input = JSON.parse(request.payload);
+    if (request.method === "term.history.batch") {
+      const reply = historyBatchReply(input, row => JSON.stringify([[0, `${String(row).padStart(6, "0")}  cached shell history / exact row identity / 80 columns`.padEnd(80, " "), row % 3 ? -1 : 0x81a2be, -1]]));
+      responses.push({ at: ticks + 6 + input.rows[0] % 9, value: JSON.stringify({ id: request.id, payload: JSON.stringify(reply) }) }); return true;
+    }
     if (request.method === "term.history") {
       const row = [[0, `${String(input.row).padStart(6, "0")}  cached shell history / exact row identity / 80 columns`.padEnd(80, " "), input.row % 3 ? -1 : 0x81a2be, -1]];
       const raw = JSON.stringify(row);

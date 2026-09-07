@@ -3,7 +3,8 @@ import { createRoot } from "solid-js";
 import { runFrameHooks, resetFrameHooks } from "../vendor/pocketjs/framework/src/frame.ts";
 import { createTermHistory, historyDemand, historyLoader, type HistoryIO, type TermHistory } from "../app/history.ts";
 import { createCursorStick } from "../app/stick.ts";
-import { HISTORY, decodeHistoryRow, slotRow, type HistoryManifest, type HistoryRequest } from "../shared/history.ts";
+import { HISTORY, decodeHistoryRow, slotRow, type HistoryManifest, type HistoryRequest, type HistoryBatchRequest } from "../shared/history.ts";
+import { historyBatchReply } from "../host/history-batch.ts";
 import { HistoryBoundary, SessionHistory } from "../host/history.ts";
 import type { Run } from "../shared/protocol.ts";
 
@@ -52,13 +53,16 @@ test("viewport demand prioritizes visible rows, stays bounded, and recycles only
 
 function transport() {
   let nextId = 0;
-  const requests: { id: number; input: HistoryRequest; done: Parameters<HistoryIO["request"]>[2]; cancelled: boolean; answered: boolean }[] = [];
+  const requests: { id: number; input: HistoryRequest & Partial<HistoryBatchRequest>; done: Parameters<HistoryIO["request"]>[2]; cancelled: boolean; answered: boolean }[] = [];
   const io: HistoryIO = {
-    request(method, payload, done) { expect(method).toBe("term.history"); const id = ++nextId; requests.push({ id, input: JSON.parse(payload), done, cancelled: false, answered: false }); return id; },
+    request(method, payload, done) { expect(["term.history", "term.history.batch"]).toContain(method); const id = ++nextId; requests.push({ id, input: JSON.parse(payload), done, cancelled: false, answered: false }); return id; },
     cancel(id) { const r = requests.find(r => r.id === id); if (r) r.cancelled = true; },
   };
-  const answer = (r: typeof requests[number], raw = JSON.stringify([[0, `history-${r.input.epoch}-${r.input.row}`, -1, -1]])) => {
+  const answer = (r: typeof requests[number], supplied?: string) => {
     r.answered = true;
+    const read = (row: number) => supplied ?? JSON.stringify([[0, `history-${r.input.epoch}-${row}`, -1, -1]]);
+    if (r.input.rows) { r.done({ ok: true, value: JSON.stringify(historyBatchReply(r.input as HistoryBatchRequest, read)) }); return; }
+    const raw = read(r.input.row);
     r.done({ ok: true, value: JSON.stringify({ epoch: r.input.epoch, row: r.input.row, part: r.input.part,
       parts: Math.ceil(raw.length / HISTORY.fragmentChars), data: raw.slice(r.input.part * HISTORY.fragmentChars, (r.input.part + 1) * HISTORY.fragmentChars) }) });
   };
@@ -82,7 +86,7 @@ test("fragmented history reads assemble exact rows and cancellation fences late 
 test("local history glides while IO is delayed; cached reading survives disconnect and append preserves its anchor", () => {
   resetFrameHooks(); const t = transport(); let h!: TermHistory, dispose!: () => void;
   createRoot(close => { dispose = close; h = createTermHistory(t.io, y => () => [[0, `live-${y}`, -1, -1]], 24, 10); });
-  const m: HistoryManifest = { epoch: "session-a", first: 0, end: 100, alternate: false };
+  const m: HistoryManifest = { epoch: "session-a", first: 0, end: 1000, alternate: false };
   h.adopt(1, m); h.setOnline(true);
   const frame = (reply = true) => { h.frame(); runFrameHooks(0); if (reply) for (const r of [...t.requests]) if (!r.answered && !r.cancelled) t.answer(r); };
   for (let i = 0; i < 30; i++) frame();
@@ -97,14 +101,14 @@ test("local history glides while IO is delayed; cached reading survives disconne
   for (let i = 0; i < 8; i++) { frame(false); positions.push(h.translation(0)); }
   expect(new Set(positions.map(p => Math.abs(p) % 10)).size).toBeGreaterThan(2); // sub-row paint positions
   h.stop(); const anchored = h.first(); expect(h.row(anchored)).toBeDefined();
-  h.adopt(1, { ...m, end: 110 }); expect(h.first()).toBe(anchored);
-  h.adopt(1, { ...m, first: 10, end: 110 }); expect(h.first()).toBe(anchored);
+  h.adopt(1, { ...m, end: 1010 }); expect(h.first()).toBe(anchored);
+  h.adopt(1, { ...m, first: 10, end: 1010 }); expect(h.first()).toBe(anchored);
   h.setOnline(false); const count = t.requests.length; for (let i = 0; i < 20; i++) frame(false);
   expect(t.requests.length).toBe(count); expect(h.row(anchored)).toBeDefined();
-  h.beginDrag(); h.drag(-600); h.endDrag(0); frame(false); expect(h.row(h.first())).toBeUndefined(); // skeleton, not a fabricated blank row
+  h.beginDrag(); h.drag(-2500); h.endDrag(0); frame(false); expect(h.row(h.first())).toBeUndefined(); // skeleton, not a fabricated blank row
   const old = t.requests.find(r => !r.answered)!;
   h.adopt(1, { ...m, epoch: "session-b" }); h.setOnline(true);
-  if (old) t.answer(old); frame(false); expect(h.first()).toBe(100); expect(h.row(0)).toBeUndefined();
+  if (old) t.answer(old); frame(false); expect(h.first()).toBe(1000); expect(h.row(0)).toBeUndefined();
   h.adopt(1, { epoch: "alternate", first: 0, end: 0, alternate: true }); h.nudge(-100); h.drag(-100); frame(false);
   expect(h.first()).toBe(0); expect(h.row(0)?.[0][1]).toBe("live-0");
   expect(h.stats().entries).toBeLessThanOrEqual(HISTORY.entries); dispose(); resetFrameHooks();

@@ -7,7 +7,8 @@ import { createServer as createHttpServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Mailbox } from "./exchange.ts";
 import { LIMITS, type ExchangeRequest } from "../shared/exchange.ts";
-import { HISTORY, type HistoryRequest } from "../shared/history.ts";
+import { HISTORY, type HistoryRequest, type HistoryBatchRequest } from "../shared/history.ts";
+import { historyBatchReply, validateHistoryBatch } from "./history-batch.ts";
 import { hostname } from "node:os";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -796,7 +797,7 @@ console.log(`[term] shell ${options.shell}, host name "${options.name}"`);
 const epoch = randomUUID(), token = randomBytes(32).toString("hex");
 const replicas = new Map<string, Conn>();
 const broker = createHttpServer(async (request, response) => {
-  if (request.method !== "POST" || !["/exchange", "/history", "/input"].includes(request.url ?? "") || request.headers.authorization !== `Bearer ${token}`) {
+  if (request.method !== "POST" || !["/exchange", "/history", "/history-batch", "/input"].includes(request.url ?? "") || request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(403).end(); return;
   }
   try {
@@ -804,6 +805,24 @@ const broker = createHttpServer(async (request, response) => {
     for await (const chunk of request) {
       body += chunk;
       if (Buffer.byteLength(body) > 4096) throw new Error("Request exceeds budget");
+    }
+    if (request.url === "/history-batch") {
+      const input = JSON.parse(body) as HistoryBatchRequest;
+      validateHistoryBatch(input);
+      const session = hub.sessions.get(input.sid);
+      if (!session?.core) throw new Error("Terminal no longer exists");
+      // Validate every address before reading any cells. Appends preserve
+      // absolute rows; pruning or a changed epoch rejects the batch.
+      for (const row of input.rows) session.history.offset(row, input.epoch);
+      const reply = historyBatchReply(input, row => {
+        const offset = session.history.offset(row, input.epoch), cells: Cell[] = [];
+        for (let x = 0; x < session.cols; x++) {
+          const cell = resolveCell(session.core!.getScrollbackCell(offset, x)); classify(cell, false); cells.push(cell);
+        }
+        return JSON.stringify(rowRuns(cells));
+      });
+      response.setHeader("content-type", "application/json"); response.end(JSON.stringify(reply));
+      return;
     }
     if (request.url === "/history") {
       const input = JSON.parse(body) as HistoryRequest;

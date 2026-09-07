@@ -3,8 +3,9 @@ import { createScroller } from "@pocketjs/framework/kinetics";
 import { createResourceScheduler } from "@pocketjs/framework/resource-cache";
 import type { ResourceDemand, ResourceLoad } from "@pocketjs/framework/resource-cache";
 import type { createOffloadClient } from "@pocketjs/framework/offload";
-import { HISTORY, decodeHistoryRow, historyKey, validManifest, type HistoryInput, type HistoryManifest, type HistoryReply } from "../shared/history.ts";
+import { HISTORY, HISTORY_BATCH, decodeHistoryRow, historyKey, validManifest, type HistoryInput, type HistoryManifest, type HistoryReply } from "../shared/history.ts";
 import type { Run } from "../shared/protocol.ts";
+import { createHistoryBatchLoader } from "./history-batch.ts";
 
 export type HistoryIO = Pick<ReturnType<typeof createOffloadClient>, "request" | "cancel">;
 
@@ -64,12 +65,14 @@ export function createTermHistory(io: HistoryIO, liveRow: (y: number) => Accesso
   const revisions = Array.from({ length: rows + 2 }, () => createSignal(0));
   const dirty = new Set<number>();
   let planned = "", plans = 0, demands = 0;
-  const runtime = createResourceScheduler({ maxCollections: 1, maxConcurrent: HISTORY.concurrent, startsPerFrame: 1, completionsPerFrame: 1,
-    available: () => online && !!manifest() && canLoad() });
+  const available = () => online && !!manifest() && canLoad();
+  const loader = createHistoryBatchLoader(io);
+  const runtime = createResourceScheduler({ maxCollections: 1, maxConcurrent: HISTORY_BATCH.pendingRows,
+    startsPerFrame: HISTORY_BATCH.rows, completionsPerFrame: HISTORY_BATCH.materializeRows, available });
   onCleanup(runtime.dispose);
   const cache = runtime.createCache({ key: historyKey, maxEntries: HISTORY.entries,
     maxCost: HISTORY.entries * 65536, cost: () => 65536, maxResponseBytes: HISTORY.rowChars * 2,
-    retry: { attempts: 3, delayFrames: 45, maxDelayFrames: 180 }, load: historyLoader(io), materialize: decodeHistoryRow,
+    retry: { attempts: 3, delayFrames: 45, maxDelayFrames: 180 }, load: loader.load, materialize: decodeHistoryRow,
     changed(input) { if (input.sid === sid() && input.epoch === manifest()?.epoch) dirty.add(input.row); } });
   // Fixed geometry means demand changes only at an eight-row boundary,
   // direction change or authoritative manifest update. The generic view
@@ -126,7 +129,7 @@ export function createTermHistory(io: HistoryIO, liveRow: (y: number) => Accesso
       if (scroller.state() === "idle" && scroller.offset() >= maximum() - 0.5) following = true;
       updateFirst();
       batch(() => {
-        plan(); runtime.step();
+        plan(); loader.publish(); runtime.step(); loader.step(available());
         for (const row of dirty) if (row >= first() && row < first() + rows + 2) revisions[row % revisions.length][1](n => n + 1);
         dirty.clear();
       });
@@ -160,7 +163,7 @@ export function createTermHistory(io: HistoryIO, liveRow: (y: number) => Accesso
     rowError(row: number) {
       const m = manifest(); return !!m && row >= m.first && row < m.end && cache.state({ sid: sid(), epoch: m.epoch, row }).status === "error";
     },
-    stats: () => ({ ...cache.stats(), plans, demands }),
+    stats: () => ({ ...cache.stats(), plans, demands, transport: loader.stats() }),
     dispose: runtime.dispose,
   };
 }

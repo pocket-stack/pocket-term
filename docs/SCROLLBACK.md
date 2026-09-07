@@ -43,7 +43,7 @@ The observer also retains a bounded OSC prefix to distinguish color changes
 from queries and titles. The native test confirms that a palette write
 recolors an existing historical cell even though its row count is unchanged.
 
-`term.history` is a read-only offload method, separate from the ordered
+`term.history.batch` groups reproducible row reads separately from the ordered
 `term.input` stream and `term.exchange` screen delivery. Every fragment repeats the epoch and row
 identity. The server rejects expired ranges; the client checks fragment
 order, identity and size and fences late completions after cancellation.
@@ -67,8 +67,11 @@ Typing and cursor keys return to live; alternate screens disable history.
 | Current demand | 144 rows, visible rows pinned first |
 | Directional lookahead | Approximately 3:1 ahead versus behind |
 | History requests in flight | 2 |
-| Starts / materializations | At most 1 of each per frame |
-| Response fragment | 600 UTF-16 code units |
+| Logical pending row loads | 32 |
+| Rows per network request | Up to 16, with replies filled to the encoded record budget |
+| Starts / materializations | Up to 16 starts and 8 row materializations per frame |
+| Materialization text budget | 4,096 code units per frame; one larger row may progress alone |
+| Offload response | At most 2,500 code units in a 4,096-byte record |
 | Serialized row | 16,384 UTF-16 code units |
 | Read retries | 3 attempts, 45–180 frame backoff |
 
@@ -109,6 +112,8 @@ delays. Add `--frame=360` to capture after the visible rows have filled.
 Neither fixture is a production launcher or evidence of physical frame rate.
 [Input and scrolling responsiveness](RESPONSIVENESS.md) documents the separate
 input path, planner changes, provisional echo and latency measurements.
+[History throughput](HISTORY-THROUGHPUT.md) records the row batching mechanism,
+transport limits and before/after cold-cache measurements.
 
 [Superlogical's public material](https://www.superlogical.com/) describes durable sessions, native history
 and reconnecting from other devices. It does not specify a reusable public

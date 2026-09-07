@@ -14,6 +14,7 @@ self.onmessage = async event => {
   self.postMessage(await dispatchOffload({
     "term.exchange": payload => forward("/exchange", payload),
     "term.history": payload => forward("/history", payload),
+    "term.history.batch": payload => forward("/history-batch", payload),
     "term.input": payload => forward("/input", payload),
   }, event.data));
 };

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { TERM_PROTO, type ClientLine, type HostLine, type Run } from "../shared/protocol.ts";
 import type { ExchangeReply, ExchangeRequest } from "../shared/exchange.ts";
-import type { HistoryManifest, HistoryReply } from "../shared/history.ts";
+import { HISTORY_BATCH, type HistoryManifest, type HistoryReply, type HistoryBatchReply } from "../shared/history.ts";
 import { createCursorStick } from "../app/stick.ts";
 
 test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT modes", { timeout: 45000 }, async () => {
@@ -73,6 +73,23 @@ test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT
         assert.equal(p.epoch, m.epoch); assert.equal(p.row, row); assert.equal(p.part, part); parts = p.parts; raw += p.data;
       }
       return JSON.parse(raw);
+    };
+    const historyRows = async (sid: number, m: HistoryManifest, rows: number[], loseReply = false): Promise<Map<number, Run[]>> => {
+      const result = new Map<number, Run[]>();
+      for (let at = 0; at < rows.length; at += HISTORY_BATCH.rows) {
+        const remaining = rows.slice(at, at + HISTORY_BATCH.rows); let raw = "";
+        while (remaining.length) {
+          const request = { sid, epoch: m.epoch, rows: remaining.slice(), offset: raw.length };
+          const p = await capability("term.history.batch", request) as HistoryBatchReply;
+          if (loseReply) { loseReply = false; transport!.destroy(); assert.deepEqual(await capability("term.history.batch", request), p); }
+          assert.equal(p.epoch, m.epoch);
+          for (const [row, offset, data, more] of p.chunks) {
+            assert.equal(row, remaining[0]); assert.equal(offset, raw.length); raw += data;
+            if (!more) { result.set(row, JSON.parse(raw)); raw = ""; remaining.shift(); }
+          }
+        }
+      }
+      return result;
     };
     class Replica {
       id: string; epoch?: string; received = 0; command = 0; partial = "";
@@ -173,16 +190,29 @@ test("real macOS PTYs: multiplex, resumable history, vim/nano cursor keys and VT
     const history = { ...reconnected.history! }, address = history.first + 3;
     const original = await historyRow(sid1, history, address);
     assert.equal(original.map(r => r[1]).join(""), "row-003");
+    const addresses = Array.from({ length: 26 }, (_, y) => history.first + y);
+    let started = performance.now(), beforeRequests = nextRequest;
+    const individual = new Map<number, Run[]>();
+    for (const row of addresses) individual.set(row, await historyRow(sid1, history, row));
+    const single = { calls: nextRequest - beforeRequests, ms: performance.now() - started };
+    started = performance.now(); beforeRequests = nextRequest;
+    const grouped = await historyRows(sid1, history, addresses);
+    const batch = { calls: nextRequest - beforeRequests, ms: performance.now() - started };
+    assert.deepEqual(grouped, individual); assert.equal(batch.calls, 2);
+    console.log("History provider loopback profile:", JSON.stringify({ rows: 26, single, batch }));
+    assert.deepEqual(await historyRows(sid1, history, [address, address + 1], true), new Map([...individual].filter(([row]) => row === address || row === address + 1)));
     const newest = await historyRow(sid1, history, history.end - 1);
     assert(newest.map(r => r[1]).join("").startsWith("row-"));
     await reconnected.exchange({ t: "ch", s: "printf 'more\\nmore\\nmore\\nmore\\n'\r" });
     await reconnected.until(() => (reconnected.history?.end ?? 0) > history.end);
     assert.equal(reconnected.history!.epoch, history.epoch); assert.deepEqual(await historyRow(sid1, history, address), original);
+    assert.deepEqual((await historyRows(sid1, history, [address])).get(address), original);
     transport!.destroy(); // historical addresses outlive the provider worker
     assert.deepEqual(await historyRow(sid1, history, address), original);
     await reconnected.exchange({ t: "ch", s: "printf '\\033[3JHISTORY_CLEARED\\n'\r" });
     await reconnected.until(() => reconnected.history?.epoch !== history.epoch);
     await assert.rejects(historyRow(sid1, history, address), /expired/);
+    await assert.rejects(historyRows(sid1, history, [address, address + 1]), /expired/);
     await first.exchange({ t: "kill", sid: sid2 }); await first.until(() => first.sessions.length === 1 && first.active === sid1);
     await first.exchange({ t: "kill", sid: sid1 }); await first.until(() => first.sessions.length === 0 && first.active === -1);
     await first.exchange({ t: "new" }); await first.until(() => first.sessions.length === 1 && first.active > sid2);

@@ -1,6 +1,39 @@
 # Paired terminal upgrade validation
 
-## Responsive input and scrolling revision
+## Batched history revision
+
+**Protocol 6 groups up to 16 history rows per network request.** Cache keys
+remain individual absolute rows. At most two network requests and 32 logical
+row loads are pending; materialization is bounded by eight rows and 4,096
+serialized code units per frame, with one larger row allowed to progress.
+[HISTORY-THROUGHPUT.md](HISTORY-THROUGHPUT.md) records the diagnosis, wire ceiling,
+measurements and native comparison.
+
+| Check | Result |
+| --- | --- |
+| Guest and host types; unit suite | Passed: 67 tests, 1,476 assertions |
+| Actual provider and macOS PTYs | Passed: 2 integrations; bulk rows match single reads across append, reconnect and expiration |
+| Cold-cache replay | 26 plain rows at 100ms RTT/60fps: 1,550ms before, 167ms after |
+| Native motion | Same delayed fixture now has consecutive cached rows throughout frame 182; six frames inspected |
+| Production launcher and Mac mirror | Built; app key path present, capture marker absent |
+| Physical FTP deployment | Launcher and pairing key read back byte-identically on 2026-09-07 at 00:31 UTC |
+| Physical revision acceptance | Pending fresh launch and fast-scroll testing |
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| pocketterm-main.3dsx | 2,027,600 | `21a4a120c9ef297856082cbac6d102dfdc021d08a3e5e1b8ed39f9940914d55b` |
+| pocketterm-main.pocket | 725,144 | `b080e6f334108671de30fcfd95196fe6974bd18b3a1aea6fb0797ac90f3ed2ea` |
+
+The new launcher is installed at `/3DS/pocketterm-main.3dsx`; the previous
+version was backed up and verified at
+`/pocketjs/runtime/native-backups/pocketterm-main-b349e7e97590e4d9.3dsx`.
+The receipt is `.pocket/last-deploy.json`. The protocol-6 companion is running;
+its trace is `.pocket/history-batch-daemon.log`. The previous worker's two
+PTYs and two existing Mac mirrors remain alive in their original process,
+not migrated into protocol 6. `.pocket/retired-protocol5-daemon.json` records
+the process preservation.
+
+## Responsive input and scrolling baseline
 
 **Protocol 5 sends input independently of output delivery and batches ordered
 keys.** Local scroll demand is planned in eight-row buckets, row movement uses
@@ -27,12 +60,12 @@ The mechanism and simulated baseline comparison are in
 | pocketterm-main.3dsx | 2,024,192 | `b349e7e97590e4d97bc43e53da9f1735fd979f65ce8dd5e7970bbda7b244355d` |
 | pocketterm-main.pocket | 721,736 | `a486a182e912b9513b914ecaecf2e5c69b1c1d889c08db3de272e8a69aa47494` |
 
-**The protocol-5 launcher is installed at `/3DS/pocketterm-main.3dsx`.**
+**The protocol-5 launcher was installed at `/3DS/pocketterm-main.3dsx`.**
 The previous launcher was backed up and verified at
 `/pocketjs/runtime/native-backups/pocketterm-main-6f65c3a374681c11.3dsx`.
-The receipt is `.pocket/last-deploy.json`; its installed hash matches the
-artifact above. The new Mac terminal worker and provider are running,
-waiting for the console to leave ftpd and launch Pocket Term.
+That deployment's readback matched the artifact above. The latest receipt
+now records protocol 6. Its then-new Mac worker and provider started
+successfully and the user later reported slow fallback-row filling.
 
 The protocol-4 supervisor and provider were stopped while the old durable
 worker and its existing PTY were preserved. That session is not migrated

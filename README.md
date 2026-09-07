@@ -46,7 +46,8 @@ The shared protocol is in `shared/protocol.ts`; geometry and queue budgets
 are in `shared/layout.ts` and `shared/exchange.ts`. The live terminal stream
 uses ordered delivery. Historical rows use a separate bounded local cache;
 [history synchronization](docs/SCROLLBACK.md) specifies row identity, epoch
-fences, offline behavior and glyph residency.
+fences, offline behavior and glyph residency. [History throughput](docs/HISTORY-THROUGHPUT.md)
+explains grouped reads, frame budgets and measured cold-cache filling.
 
 **Desktop mirrors share the same PTY and grid renderer.** Each window gets
 a dedicated loopback listener bound to its session, so concurrent window

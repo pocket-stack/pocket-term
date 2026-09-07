@@ -15,7 +15,7 @@
 
 /** The pocket-svc app id (manifest `companions`, PKNT handshake, beacon). */
 export const TERM_APP = "term";
-export const TERM_PROTO = 5;
+export const TERM_PROTO = 6;
 
 /** Keep every emitted line comfortably under SVC_POLL_BUF. */
 export const LINE_BUDGET = 6144;

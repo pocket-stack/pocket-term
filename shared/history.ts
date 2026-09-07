@@ -6,7 +6,12 @@ export interface HistoryManifest { epoch: string; first: number; end: number; al
 export interface HistoryInput { sid: number; epoch: string; row: number }
 export interface HistoryRequest extends HistoryInput { part: number }
 export interface HistoryReply { epoch: string; row: number; part: number; parts: number; data: string }
+export interface HistoryBatchRequest { sid: number; epoch: string; rows: number[]; offset: number }
+/** Each chunk belongs to one absolute row. A reply can finish many rows;
+ * only an individually large row continues at a nonzero offset. */
+export interface HistoryBatchReply { epoch: string; chunks: [row: number, offset: number, data: string, more: boolean][] }
 export const HISTORY = { rows: 2000, entries: 192, demand: 144, fragmentChars: 600, rowChars: 16384, concurrent: 2 } as const;
+export const HISTORY_BATCH = { rows: 16, concurrent: 2, pendingRows: 32, materializeRows: 8, materializeChars: 4096, fragmentChars: 2200 } as const;
 export const historyKey = (i: HistoryInput) => `${i.sid}/${i.epoch}/${i.row}`;
 
 export function validManifest(m: HistoryManifest): boolean {

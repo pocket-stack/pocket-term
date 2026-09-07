@@ -1,6 +1,7 @@
 # Input and scrolling responsiveness
 
-**Protocol 5 separates input from screen delivery.** `term.input` has one
+**Input is separate from screen delivery since protocol 5.** Protocol 6 adds
+[batched history reads](HISTORY-THROUGHPUT.md). `term.input` has one
 request in flight, containing up to eight ordered commands that fit the
 PocketJS offload record budget. `term.exchange` independently pulls screen
 fragments. A held output reply cannot prevent a new key from reaching the
