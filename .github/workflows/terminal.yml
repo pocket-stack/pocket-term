@@ -1,0 +1,40 @@
+name: Terminal contracts
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "assets/**"
+      - "host/**"
+      - "mirror/**"
+      - "shared/**"
+      - "scripts/**"
+      - "test/**"
+      - "vendor/pocketjs"
+      - "package.json"
+      - "pocket*.json"
+      - "tsconfig.json"
+      - ".github/workflows/terminal.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: terminal-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  terminal:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: bun run setup
+      - run: bun run check
+      - run: bun scripts/font.ts --check
+      - run: bun run test:pty

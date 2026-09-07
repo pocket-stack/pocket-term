@@ -1,47 +1,19 @@
-// app/app.tsx — a remote terminal multiplexer for the 3ds-dev host.
-//
-// The Mac companion (host/serve.ts) owns the PTYs and an authoritative
-// terminal state machine per session; this app is a passive replica in the
-// zhongduan sense: attach delivers a full cell-grid snapshot, then ordered
-// row diffs. The two screens split the terminal the way the contacts demo
-// split the phone app: the top screen is the grid (grid.tsx, shared with the
-// desktop mirror window) and the touch screen holds the session tabs and the
-// keyboard.
-//
-// Physical controls: D-pad = arrow keys (with repeat), A = Enter,
-// B = Backspace, X = Tab, Y = Space, START = Ctrl-C, SELECT = new session,
-// circle pad = scrollback.
-//
-// ZL is Ctrl: hold it and every key that follows carries the control
-// modifier, with the on-screen keyboard lighting its Ctrl cap so the state is
-// visible where the operator is already looking. ZL is New-3DS-only and
-// reaches the guest through ir:rst rather than the ordinary HID pad
-// (hosts/3ds/src/input.c); a console without it uses the keyboard's own Ctrl
-// cap, which arms for one key.
-//
-// L and R step between sessions, and that is all they do. They briefly
-// doubled as the modifier, which meant discriminating a tap from a hold —
-// and a shoulder that only switches when released is a shoulder that feels
-// broken. One button, one job.
+// 3DS terminal: the full primary surface is a grid; the auxiliary surface
+// owns session navigation, connection status and incremental keyboard input.
 
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
-import { analogY, onFrame } from "@pocketjs/framework/lifecycle";
+import { analogY, rightAnalogX, rightAnalogY, onFrame } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
-import { getOps } from "@pocketjs/framework";
 import { TermGrid } from "./grid.tsx";
 import { KB_H, Keyboard } from "./keyboard.tsx";
-import { connectSvc } from "./svc.ts";
-import { createTermStore } from "./store.ts";
-
-/* Grid geometry. The 12 px mono atlas is slot 16 (spec MONO_FONT_PX);
- * `font-mono text-xs` in grid.tsx is what makes the build bake it. The
- * natural advance (~7.2 px) is snapped down to a 7 px integer cell with
- * negative tracking so every column lands on a pixel. */
-const MONO_SLOT = 16;
-const STATUS_H = 14;
-const CELL_H = 13;
+import { connectTermOffload } from "./offload.ts";
+import { FONT_NAMES, loadTerminalFont } from "./font.ts";
+import { TERM_LAYOUT, TABS_PER_PAGE, tabPage } from "../shared/layout.ts";
+import { createTermStore, type TermStore } from "./store.ts";
+import { createCursorStick } from "./stick.ts";
+import { TermSettings } from "./settings.tsx";
 
 const TAB_H = 26;
 const TAB_W = 72;
@@ -50,13 +22,6 @@ const TAB_W = 72;
 const TAB_NEW_W = 30;
 const KB_TOP = 240 - KB_H;
 
-/** The strip between the tabs and the keyboard: two 12 px lines, centred. */
-const HINT_LINE = 14;
-const HINT_TOP = Math.round((KB_TOP - TAB_H - (HINT_LINE + 12)) / 2);
-const HINT_BUTTONS = "SELECT new · L/R switch · hold ZL = ctrl";
-/** 12 px regular — slot 0 of the pinned table the compiler bakes
- *  (framework/compiler/tailwind.ts), which is what `text-xs` draws in. */
-const HINT_SLOT = 0;
 
 /* Closing a session is a hold, then a slide, then a release — not a tap on a
  * small ×. The panel is resistive and single-contact: an 18 px target inside
@@ -78,18 +43,22 @@ const DPAD_KEYS: readonly [number, "Up" | "Down" | "Left" | "Right"][] = [
 const DPAD_DELAY = 18;
 const DPAD_REPEAT = 4;
 
-export default function TermApp() {
-  const ops = getOps();
-  const advance = ops.measureText("M", MONO_SLOT);
-  // What the hint occupies is what the host name cannot have.
-  const hintWidth = Math.ceil(ops.measureText(HINT_BUTTONS, HINT_SLOT));
-  const CELL_W = advance > 0 ? Math.max(6, Math.round(advance)) : 7;
-  const TRACK = advance > 0 ? CELL_W - advance : 0;
-  const COLS = Math.floor(400 / CELL_W);
-  const ROWS = Math.floor((240 - STATUS_H) / CELL_H);
-
-  const svc = connectSvc();
-  const store = createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, svc);
+export default function TermApp(props: { store?: TermStore; initialSettings?: boolean } = {}) {
+  loadTerminalFont();
+  const { cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H } = TERM_LAYOUT;
+  const store = props.store ?? createTermStore({ cols: COLS, rows: ROWS, cell: [CELL_W, CELL_H] }, connectTermOffload());
+  onCleanup(() => store.dispose());
+  const [page, setPage] = createSignal(0);
+  const [fontIndex, setFontIndex] = createSignal(0);
+  const [settingsOpen, setSettingsOpen] = createSignal(props.initialSettings ?? false);
+  const [scrollSpeed, setScrollSpeed] = createSignal(1);
+  const [preview, setPreview] = createSignal(true);
+  const pageCount = () => Math.max(1, Math.ceil(store.sessions().length / TABS_PER_PAGE));
+  const visibleSessions = () => store.sessions().slice(page() * TABS_PER_PAGE, (page() + 1) * TABS_PER_PAGE);
+  createEffect(() => {
+    const at = store.sessions().findIndex(s => s.sid === store.activeSid());
+    setPage(tabPage(at));
+  });
   /** The touch keyboard's one-shot Ctrl: armed by its cap, spent by the next
    *  key. Holding L is the other way in, and the cap lights for both. */
   const [ctrlArmed, setCtrlArmed] = createSignal(false);
@@ -97,15 +66,31 @@ export default function TermApp() {
   const ctrlActive = () => ctrlArmed() || ctrlHeld();
 
   const dpadHeld = new Map<number, number>();
-  let scrollCarry = 0;
+  const cursorStick = createCursorStick();
 
-  let prevButtons = 0;
+  let prevButtons = 0, stickVelocity = 0;
 
   onFrame((buttons) => {
+    // Preserve the stick's velocity on release instead of easing through
+    // only the final chase gap. Both touch and stick use the same fling.
+    const pad = analogY();
+    if (!settingsOpen() && Math.abs(pad) > 0.1) {
+      const step = Math.sign(pad) * (Math.abs(pad) - 0.1) / 0.9 * 18 * scrollSpeed();
+      if (step * stickVelocity < 0) store.history?.stop();
+      stickVelocity = step * 60; store.history?.nudge(step);
+    } else if (stickVelocity) {
+      if (!settingsOpen()) { store.history?.beginDrag(); store.history?.endDrag(stickVelocity); }
+      stickVelocity = 0;
+    }
     store.frame();
 
     const pressed = buttons & ~prevButtons;
     prevButtons = buttons;
+    if (settingsOpen()) {
+      cursorStick.reset(); dpadHeld.clear();
+      if (pressed & BTN.CROSS) setSettingsOpen(false);
+      return;
+    }
     setCtrlHeld((buttons & BTN.ZL) !== 0);
 
     let sentThisFrame = false;
@@ -134,35 +119,31 @@ export default function TermApp() {
     if (pressed & BTN.START) send("c", true);
     if (pressed & BTN.SELECT) store.newSession();
 
+    const cursorKey = cursorStick.step(rightAnalogX(), rightAnalogY());
+    if (cursorKey) send(cursorKey, ctrlActive());
+
     if (sentThisFrame && ctrlArmed()) setCtrlArmed(false);
 
     if (pressed & BTN.LTRIGGER) store.attachSibling(-1);
     if (pressed & BTN.RTRIGGER) store.attachSibling(1);
 
-    // Circle pad Y scrubs scrollback: up = into history (positive delta).
-    const pad = analogY();
-    if (Math.abs(pad) > 0.25) {
-      scrollCarry += -pad * 0.5;
-      const lines = Math.trunc(scrollCarry);
-      if (lines !== 0) {
-        scrollCarry -= lines;
-        store.scroll(lines);
-      }
-    } else {
-      scrollCarry = 0;
-    }
   });
 
   // Session tab strip on the touch screen: tap a tab to attach, hold one to
   // arm closing it, the trailing + to open one.
   let tabsNode: NodeMirror | undefined;
+  let pagesNode: NodeMirror | undefined;
+  createGesture({ surface: "auxiliary", region: { node: () => pagesNode }, onTap: contact => {
+    const count = pageCount();
+    setPage(p => (p + (contact.y < 68 ? -1 : 1) + count) % count);
+  } });
   /** The session the close bar is armed for, and how far the bar has slid. */
   const [closingSid, setClosingSid] = createSignal(-1);
   const [closeAnim, setCloseAnim] = createSignal(0);
   const [overClose, setOverClose] = createSignal(false);
   const inCloseBar = (y: number) => y >= TAB_H && y < TAB_H + CLOSE_BAR_H;
   const sessionAt = (x: number) => {
-    const list = store.sessions();
+    const list = visibleSessions();
     const index = Math.floor(x / TAB_W);
     return index >= 0 && index < list.length ? list[index] : undefined;
   };
@@ -197,7 +178,7 @@ export default function TermApp() {
         return;
       }
       // A plain tap: the tabs, then the trailing cell that opens one.
-      const list = store.sessions();
+      const list = visibleSessions();
       const session = sessionAt(contact.x);
       if (session) {
         store.attach(session.sid);
@@ -215,13 +196,23 @@ export default function TermApp() {
   const closingTitle = () =>
     store.sessions().find((s) => s.sid === closingSid())?.title ?? "";
 
+  let touchpad: NodeMirror | undefined;
+  const [touching, setTouching] = createSignal(false);
+  createGesture({ surface: "auxiliary", region: { node: () => touchpad }, axis: "y", panSlop: 2,
+    onDown() { if (closingSid() < 0) { setTouching(true); store.history?.beginDrag(); } },
+    onPanMove(c) { if (closingSid() < 0) store.history?.drag(-c.fdy * 3 * scrollSpeed()); },
+    onPanEnd(c) { setTouching(false); store.history?.endDrag(-c.vy * 3 * scrollSpeed()); },
+    onTap() { setTouching(false); store.history?.endDrag(0); },
+    onCancel() { setTouching(false); store.history?.stop(); },
+  });
+
   return (
     <>
       <TermGrid
         store={store}
         metrics={{ cols: COLS, rows: ROWS, cellW: CELL_W, cellH: CELL_H, track: TRACK, statusH: STATUS_H }}
         badge={`${COLS}×${ROWS}`}
-        hint="on the Mac: node host/serve.ts"
+        hint="Connect the paired Mac to continue"
         emptyHint="SELECT opens one · or tap + on the touch screen"
         title="POCKET TERM"
       />
@@ -235,7 +226,7 @@ export default function TermApp() {
             class="absolute left-0 right-0 top-0 flex-row bg-[#141a24]"
             style={{ height: TAB_H }}
           >
-            <For each={store.sessions()}>
+            <For each={visibleSessions()}>
               {(session) => (
                 <View
                   class={
@@ -269,6 +260,29 @@ export default function TermApp() {
             </View>
           </View>
 
+          <View ref={touchpad} debugName="HistoryTouchpad" class="absolute left-[4] top-[30] h-[76] rounded-[4] border border-[#273345] overflow-hidden" style={{ width: pageCount() > 1 ? 260 : 312, bgColor: touching() ? 0xff30251b : 0xff1b1611 }}>
+            <View class="absolute left-[110] top-[34] w-[40] h-[1] bg-[#35475b]" />
+            <View class="absolute left-[118] top-[40] w-[24] h-[1] bg-[#35475b]" />
+            <View class={store.conn() === "live" ? "absolute right-[7] bottom-[7] w-[3] h-[3] rounded-[2] bg-[#42765a]" : "absolute right-[7] bottom-[7] w-[3] h-[3] rounded-[2] bg-[#bb8041]"} />
+          </View>
+          <Show when={pageCount() > 1}>
+            <View ref={node => pagesNode = node} class="absolute left-[270] top-[30] w-[46] h-[76] rounded-[4] bg-[#141b24]">
+              <Text class="absolute left-[16] top-[7] text-lg text-[#9fb6d8]">‹</Text>
+              <Text class="absolute left-[16] top-[43] text-lg text-[#9fb6d8]">›</Text>
+            </View>
+          </Show>
+
+          <Keyboard
+            top={KB_TOP}
+            onSettings={() => { store.history?.stop(); setSettingsOpen(true); }}
+            onChar={(ch) => {
+              store.sendText(ch);
+              setCtrlArmed(false);
+            }}
+            onKey={(name, ctrl, alt, shift) => store.sendKey(name, ctrl || ctrlHeld(), alt, shift)}
+            ctrlArmed={ctrlActive}
+            setCtrlArmed={setCtrlArmed}
+          />
           {/* Slides out from under the strip while a tab is held. */}
           <Show when={closeAnim() > 0}>
             <View
@@ -293,56 +307,11 @@ export default function TermApp() {
             </View>
           </Show>
 
-          {/* Both columns are anchored to their own edge instead of sharing a
-              flex row. A companion's name is whatever its machine is called —
-              the macOS default is "evandeMacBook-Pro" — and in a row that long
-              name widened the left column until it pushed the hints off the
-              320 px panel. Anchored, the hints cannot move, and the name is
-              given the width that is actually left over: measured, because the
-              hint beside it is the thing that decides it. */}
-          <View
-            class="absolute left-0 right-0 overflow-hidden"
-            style={{ insetT: TAB_H, height: KB_TOP - TAB_H }}
-          >
-            <Text
-              class={
-                store.conn() === "live"
-                  ? "absolute left-[8] text-xs text-[#61c16d]"
-                  : "absolute left-[8] text-xs text-[#c95c5c]"
-              }
-              style={{ insetT: HINT_TOP }}
-            >
-              {store.conn() === "live" ? "connected" : store.conn()}
-            </Text>
-            <Text
-              class="absolute left-[8] text-xs text-[#5d708c]"
-              style={{ insetT: HINT_TOP + HINT_LINE, insetR: hintWidth + 16 }}
-            >
-              {store.hostName() || "—"}
-            </Text>
-            <Text
-              class="absolute right-[8] text-xs text-[#3d4c63]"
-              style={{ insetT: HINT_TOP }}
-            >
-              {HINT_BUTTONS}
-            </Text>
-            <Text class="absolute right-[8] text-xs text-[#3d4c63]" style={{ insetT: HINT_TOP + HINT_LINE }}>
-              {store.dynamicGlyphs() > 0
-                ? `pad scrolls · ${store.dynamicGlyphs()} runtime glyphs`
-                : "pad scrolls history · A ⏎ · B ⌫"}
-            </Text>
-          </View>
-
-          <Keyboard
-            top={KB_TOP}
-            onChar={(ch) => {
-              store.sendText(ch);
-              setCtrlArmed(false);
-            }}
-            onKey={(name, ctrl) => store.sendKey(name, ctrl || ctrlHeld())}
-            ctrlArmed={ctrlActive}
-            setCtrlArmed={setCtrlArmed}
-          />
+          <Show when={settingsOpen()}>
+            <TermSettings font={fontIndex()} speed={scrollSpeed()} preview={preview()} status={store.conn() === "live" ? store.hostName() : "Waiting for paired Mac"}
+              onFont={n => { setFontIndex(n); loadTerminalFont(FONT_NAMES[n]); }}
+              onSpeed={setScrollSpeed} onPreview={on => { setPreview(on); store.setPreview(on); }} onClose={() => setSettingsOpen(false)} />
+          </Show>
         </View>
       </AuxiliarySurface>
     </>

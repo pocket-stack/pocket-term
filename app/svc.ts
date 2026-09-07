@@ -2,22 +2,13 @@
 // apps/note/svc.ts shape). Hosts without the channel feature-detect to null
 // and the app stays on its connect screen.
 
-import { getOps } from "@pocketjs/framework";
-import { TERM_APP, type ClientLine, type HostInputLine, type HostLine } from "./protocol.ts";
+import { getOps } from "@pocketjs/framework/host";
+import { TERM_APP, type ClientLine, type HostInputLine, type HostLine } from "../shared/protocol.ts";
 
-export interface Svc {
-  /** Non-blocking transport probe — call once per frame; false while the
-   *  companion is still being discovered (the app supplies the cadence). */
-  open(): boolean;
-  /** Drain and parse this frame's lines (call once per frame). The queue
-   *  carries the companion's terminal state and, on a desktop host, the
-   *  window's own input — see HostInputLine. */
-  poll(): (HostLine | HostInputLine)[];
-  send(line: ClientLine): void;
-}
+import type { TermChannel } from "./channel.ts";
 
 /** Null = this host has no svc channel at all (goldens, hosts/sim). */
-export function connectSvc(): Svc | null {
+export function connectSvc(): TermChannel | null {
   const ops = getOps();
   if (!ops.svcOpen || !ops.svcPoll || !ops.svcSend) return null;
   const open = ops.svcOpen.bind(ops);

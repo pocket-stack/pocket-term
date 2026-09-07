@@ -34,10 +34,12 @@ import { fileURLToPath } from "node:url";
 // bundler-only `module` field (see framework/compiler/bake-font.ts).
 import opentype, { type Font } from "opentype.js";
 import { bakeSlot } from "../vendor/pocketjs/framework/compiler/bake-font.ts";
-import { FONT_CMAP_ENTRY_SIZE, FONT_HEADER_SIZE } from "../vendor/pocketjs/contracts/spec/spec.ts";
-import { DYNAMIC_SLOTS, TERM_GLYPHS } from "../app/protocol.ts";
+import { FONT_CMAP_ENTRY_SIZE, FONT_HEADER_SIZE, FONT_MAGIC, FONT_VERSION } from "../vendor/pocketjs/contracts/spec/spec.ts";
+import { DYNAMIC_SLOTS, TERM_GLYPHS } from "../shared/protocol.ts";
+import { bitmapCell, type BitmapFont } from "../shared/bitmap-font.ts";
+import { bitmapFontSource, loadBitmapFont } from "../shared/font-sources.ts";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const ROOT = fileURLToPath(new URL("../vendor/pocketjs/", import.meta.url));
 
 /**
  * The fallback chain, best face first. Each entry takes one atlas slot, so
@@ -163,10 +165,10 @@ function loadFont(paths: readonly string[]): { font: Font; path: string } | null
 /** Glyphs kept per face. This bounds the bake, the transfer, and device
  *  memory — the PICA200 expands atlas coverage to RGBA8, so the glyph grid's
  *  power-of-two envelope costs 4 bytes per sample. */
-const MAX_GLYPHS = 224;
+const MAX_GLYPHS = 1024;
 /** Nothing below this is legible; a too-small glyph still beats one that
  *  paints over the column beside it. */
-const MIN_PX = 7;
+const MIN_PX = 4;
 
 export interface BakedDynamicAtlas {
   slot: number;
@@ -179,7 +181,7 @@ export interface BakedDynamicAtlas {
 class FaceAtlas {
   readonly slot: number;
   readonly label: string;
-  readonly font: Font;
+  readonly font: Font | BitmapFont;
   readonly path: string;
   /** codepoint -> cell columns, in last-seen order (the eviction order). */
   #wanted = new Map<number, number>();
@@ -187,7 +189,7 @@ class FaceAtlas {
   #gen = 0;
   #baked: BakedDynamicAtlas | null = null;
 
-  constructor(slot: number, label: string, font: Font, path: string) {
+  constructor(slot: number, label: string, font: Font | BitmapFont, path: string) {
     this.slot = slot;
     this.label = label;
     this.font = font;
@@ -202,8 +204,10 @@ class FaceAtlas {
     return this.#baked;
   }
 
-  covers(cp: number): boolean {
-    return this.font.charToGlyphIndex(String.fromCodePoint(cp)) !== 0;
+  covers(cp: number, columns: number): boolean {
+    if ("ascent" in this.font) { const glyph = this.font.glyphs.get(cp); return !!glyph && glyph.advance <= columns * 5 && glyph.pixels.some(p => p !== 0); }
+    const text = String.fromCodePoint(cp);
+    return this.font.charToGlyphIndex(text) !== 0 && this.font.charToGlyph(text).getPath(0, 0, 16).commands.length > 0;
   }
 
   want(cp: number, columns: number): void {
@@ -221,6 +225,11 @@ class FaceAtlas {
       this.#wanted.delete(oldest.value);
     }
     const chars = [...this.#wanted.keys()].sort((a, b) => a - b);
+    if ("ascent" in this.font) {
+      const bytes = bakeBitmapAtlas(this.font, this.slot, this.#wanted, cellW, cellH);
+      this.#dirty = false;
+      return this.#baked = { slot: this.slot, gen: ++this.#gen, bytes, glyphCount: chars.length + 1, px: 10 };
+    }
     // The cell has to fit the narrowest span in this atlas: one atlas has one
     // cell size, and a two-column glyph's box would clip a one-column one's
     // neighbour.
@@ -255,11 +264,12 @@ class FaceAtlas {
 export class DynamicAtlasSet {
   #faces: FaceAtlas[] | null = null;
   /** Resolved routing, so a repeat codepoint costs a map read. */
-  #route = new Map<number, number>();
+  #route = new Map<string, number>();
 
   #ensure(): FaceAtlas[] {
     if (this.#faces !== null) return this.#faces;
-    const faces: FaceAtlas[] = [];
+    const path = fileURLToPath(bitmapFontSource("fusion"));
+    const faces: FaceAtlas[] = [new FaceAtlas(DYNAMIC_SLOTS[0], "fusion-pixel", loadBitmapFont("fusion"), path)];
     for (const rung of FONT_CHAIN) {
       if (faces.length >= DYNAMIC_SLOTS.length) break;
       const found = loadFont(rung.paths);
@@ -279,21 +289,19 @@ export class DynamicAtlasSet {
 
   /** The slot that can draw this codepoint, or -1 for nobody. Unbaked and
    *  uncovered means the caller must keep the grid honest itself. */
-  slotFor(cp: number): number {
+  slotFor(cp: number, columns = 2): number {
     if (isBakedCodepoint(cp)) return -1;
-    const known = this.#route.get(cp);
+    const key = `${cp}/${columns}`, known = this.#route.get(key);
     if (known !== undefined) return known;
-    const text = String.fromCodePoint(cp);
     for (const face of this.#ensure()) {
-      if (face.font.charToGlyphIndex(text) === 0) continue;
       // A cmap hit with no outline (a colour-bitmap emoji face) would bake a
       // blank cell, which reads as a dropped character rather than a missing
       // one.
-      if (face.font.charToGlyph(text).getPath(0, 0, 16).commands.length === 0) continue;
-      this.#route.set(cp, face.slot);
+      if (!face.covers(cp, columns)) continue;
+      this.#route.set(key, face.slot);
       return face.slot;
     }
-    this.#route.set(cp, -1);
+    this.#route.set(key, -1);
     return -1;
   }
 
@@ -331,6 +339,23 @@ export class DynamicAtlasSet {
     }
     return out;
   }
+}
+
+export function bakeBitmapAtlas(font: BitmapFont, slot: number, wanted: ReadonlyMap<number, number>, cellW: number, cellH: number): Uint8Array {
+  const chars = [...new Set([...wanted.keys(), 0xfffd])].sort((a, b) => a - b);
+  const width = cellW * 2, size = width * cellH, start = 16 + chars.length * 8;
+  const bytes = new Uint8Array(start + chars.length * size), view = new DataView(bytes.buffer);
+  view.setUint32(0, FONT_MAGIC, true); view.setUint16(4, FONT_VERSION, true); view.setUint16(6, chars.length, true);
+  bytes.set([width, cellH, 9, cellH, slot, 0, 1, 0], 8);
+  let next = 1;
+  for (let i = 0; i < chars.length; i++) {
+    const cp = chars[i], gid = cp === 0xfffd ? 0 : next++, at = 16 + i * 8;
+    view.setUint32(at, cp, true); view.setUint16(at + 4, gid, true); bytes[at + 6] = (wanted.get(cp) ?? 1) * cellW;
+    const pixels = bitmapCell(font, cp, width, cellH);
+    if (cp !== 0xfffd && pixels) bytes.set(pixels, start + gid * size);
+  }
+  for (let y = 1; y < cellH - 1; y++) for (let x = 0; x < cellW - 1; x++) if (x === 0 || x === cellW - 2 || y === 1 || y === cellH - 2) bytes[start + y * width + x] = 255;
+  return bytes;
 }
 
 /** Rewrite every cmap entry's advance to `columns * cellW` (spec.ts FONT

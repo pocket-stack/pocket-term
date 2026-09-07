@@ -1,0 +1,17 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { resolve3dsBuildPlan } from "../vendor/pocketjs/tools/3ds-profile.ts";
+import { build3ds } from "../vendor/pocketjs/tools/3ds.ts";
+import { ROOT } from "./paths.ts";
+const root = resolve(ROOT, ".pocket/visual"); mkdirSync(root, { recursive: true });
+const manifest = JSON.parse(readFileSync(resolve(ROOT, "pocket.json"), "utf8"));
+manifest.id += ".qa"; manifest.app.output = "pocketterm-qa"; manifest.app.entry = "main.tsx";
+writeFileSync(resolve(root, "pocket.json"), JSON.stringify(manifest));
+const history = process.argv.includes("--history"), settings = process.argv.includes("--settings"), preview = process.argv.includes("--preview");
+const showcase = process.argv.includes("--showcase");
+writeFileSync(resolve(root, "main.tsx"), `import { mountFixture } from "../../test/fixtures/screen.tsx";\nmountFixture(${history}, ${settings}, ${preview}, ${showcase});\n`);
+const planPath = resolve(root, "plan.json"); writeFileSync(planPath, JSON.stringify(resolve3dsBuildPlan(manifest)));
+const captureFrame = Number(process.argv.find(arg => arg.startsWith("--frame="))?.slice(8) ?? (preview ? 93 : history ? 180 : 40));
+if (!Number.isInteger(captureFrame) || captureFrame < 0 || captureFrame > 10000) throw new Error("Invalid capture frame");
+process.env.POCKETJS_CAP_START = String(captureFrame); process.env.POCKETJS_CAP_N = process.argv.includes("--motion") ? "6" : "1";
+await build3ds([`--plan=${planPath}`, `--project-root=${root}`, "--capture"]);

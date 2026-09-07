@@ -10,10 +10,13 @@
 // advances the companion pinned to the grid, so mixed CJK and ASCII lines
 // stay on their columns without the app measuring anything.
 
-import { For, Show } from "solid-js";
-import { Text, View } from "@pocketjs/framework/components";
-import { getOps } from "@pocketjs/framework";
-import { THEME_CURSOR, THEME_FG, isDynamicSlot, runColumns, type Run } from "./protocol.ts";
+import { createMemo, For, Show } from "solid-js";
+import { Text, View, type NodeMirror } from "@pocketjs/framework/components";
+import { onFrame } from "@pocketjs/framework/lifecycle";
+import * as hot from "@pocketjs/framework/hot";
+import { slotRow } from "../shared/history.ts";
+import { getOps } from "@pocketjs/framework/host";
+import { THEME_CURSOR, THEME_FG, isDynamicSlot, runColumns, type Run } from "../shared/protocol.ts";
 import { rgbToAbgr, type TermStore } from "./store.ts";
 
 export interface GridMetrics {
@@ -51,7 +54,7 @@ function connectionLabel(store: TermStore): string {
     case "no-svc":
       return "this host has no companion channel";
     case "search":
-      return "searching for the companion beacon (UDP 8621)…";
+      return "waiting for the paired Mac…";
     case "link":
       return "companion linked — waiting for a session…";
     case "live":
@@ -78,61 +81,34 @@ export function TermGrid(props: GridProps) {
   const hostLeft = STATUS_PAD + Math.ceil(getOps().measureText(props.title, STATUS_BOLD_SLOT)) + STATUS_GAP;
   const cursorLeft = () => (store.cursor()?.[0] ?? 0) * m.cellW;
   const cursorTop = () => m.statusH + (store.cursor()?.[1] ?? 0) * m.cellH;
-  const cursorOn = () => store.cursor()?.[2] === 1 && store.conn() === "live";
+  const cursorOn = () => store.cursor()?.[2] === 1 && store.conn() === "live" && store.scrollback() === 0;
+  const first = () => store.history?.first() ?? 0;
+  // Rebase before large absolute row ids lose pixel precision in native floats.
+  const origin = createMemo(() => Math.floor(first() / 512) * 512);
+  let canvas: NodeMirror | undefined, previewNode: NodeMirror | undefined, previewText: NodeMirror | undefined, previewLine: NodeMirror | undefined;
+  const rowNodes: (NodeMirror | undefined)[] = [];
+  let placedFirst = -1;
+  onFrame(() => {
+    hot.prop(canvas, "translateY", store.history?.translation(origin()) ?? 0);
+    if (placedFirst !== first()) {
+      placedFirst = first();
+      for (let slot = 0; slot < m.rows + 2; slot++) hot.prop(rowNodes[slot], "translateY", m.statusH + ((store.history ? slotRow(slot, first(), m.rows + 2) : slot) - origin()) * m.cellH);
+    }
+    const p = store.scrollback() === 0 ? store.preview()?.text : undefined;
+    hot.prop(previewNode, "opacity", p ? 1 : 0);
+    if (p) {
+      hot.prop(previewNode, "translateX", p.x * m.cellW); hot.prop(previewNode, "translateY", m.statusH + p.y * m.cellH);
+      hot.text(previewText, p.value); hot.prop(previewLine, "scaleX", p.value.length * m.cellW);
+    }
+  });
 
-  return (
-    <View debugName="TermScreen" class="relative w-full h-full bg-[#10151c] overflow-hidden">
-      <View
-        debugName="TermStatus"
-        class={
-          store.bell()
-            ? "absolute left-0 right-0 top-0 overflow-hidden bg-[#7a4a1d]"
-            : "absolute left-0 right-0 top-0 overflow-hidden bg-[#1a2230]"
-        }
-        style={{ height: m.statusH }}
-      >
-        <Text class="absolute left-[6] top-0 text-xs text-[#9fb6d8] font-bold">{props.title}</Text>
-        <Text
-          class="absolute top-0 text-xs text-[#5d708c]"
-          style={{ insetL: hostLeft, insetR: STATUS_RIGHT }}
-        >
-          {store.hostName()}
-        </Text>
-        <Show when={store.scrollback() > 0}>
-          <Text class="absolute right-[62] top-0 text-xs text-[#e0b060]">{`↟${store.scrollback()}`}</Text>
-        </Show>
-        <Text class="absolute right-[18] top-0 text-xs text-[#5d708c]">{props.badge}</Text>
-        <Text
-          class={
-            store.conn() === "live"
-              ? "absolute right-[6] top-0 text-xs text-[#61c16d]"
-              : "absolute right-[6] top-0 text-xs text-[#c95c5c]"
-          }
-        >
-          ●
-        </Text>
-      </View>
-
-      <Show when={cursorOn()}>
-        <View
-          class="absolute"
-          style={{
-            insetL: cursorLeft(),
-            insetT: cursorTop(),
-            width: m.cellW,
-            height: m.cellH,
-            // Translucent block under the glyphs (rows paint after this).
-            bgColor: ((0x66 << 24) | (rgbToAbgr(THEME_CURSOR) & 0xffffff)) >>> 0,
-          }}
-        />
-      </Show>
-
-      {Array.from({ length: m.rows }, (_, y) => (
-        <View
-          class="absolute left-0 right-0"
-          style={{ insetT: m.statusH + y * m.cellH, height: m.cellH }}
-        >
-          <For each={store.row(y)()}>
+  const rowCanvas = <View ref={canvas} debugName="TerminalRows" class="absolute left-0 right-0 top-0" style={{ height: m.rows * m.cellH }}>
+        {Array.from({ length: m.rows + 2 }, (_, slot) => {
+          const row = createMemo(() => store.history ? slotRow(slot, first(), m.rows + 2) : slot);
+          const runs = () => store.history ? store.history.row(row()) : slot < m.rows ? store.row(slot)() : [];
+          return <View ref={node => rowNodes[slot] = node} debugName="TerminalRow" class="absolute left-0 right-0 top-0" style={{ height: m.cellH }}>
+            <Show when={runs() !== undefined} fallback={<View debugName="HistorySkeleton" class="absolute left-[5] top-[3] h-[4]" style={{ width: 65 + row() % 7 * 35, bgColor: store.history?.rowError(row()) ? 0xff35416b : 0xff30251d }} />}>
+          <For each={runs()}>
             {(run: Run) => (
               <>
                 <Show when={run[3] >= 0}>
@@ -171,10 +147,65 @@ export function TermGrid(props: GridProps) {
               </>
             )}
           </For>
-        </View>
-      ))}
+            </Show>
+          </View>;
+        })}
+      </View>;
 
-      <Show when={store.conn() !== "live"}>
+  return (
+    <View debugName="TermScreen" class="relative w-full h-full bg-[#10151c] overflow-hidden">
+      <Show when={m.statusH > 0}><View
+        debugName="TermStatus"
+        class={
+          store.bell()
+            ? "absolute left-0 right-0 top-0 overflow-hidden bg-[#7a4a1d]"
+            : "absolute left-0 right-0 top-0 overflow-hidden bg-[#1a2230]"
+        }
+        style={{ height: m.statusH }}
+      >
+        <Text class="absolute left-[6] top-0 text-xs text-[#9fb6d8] font-bold">{props.title}</Text>
+        <Text
+          class="absolute top-0 text-xs text-[#5d708c]"
+          style={{ insetL: hostLeft, insetR: STATUS_RIGHT }}
+        >
+          {store.hostName()}
+        </Text>
+        <Show when={store.scrollback() > 0}>
+          <Text class="absolute right-[62] top-0 text-xs text-[#e0b060]">{`↟${store.scrollback()}`}</Text>
+        </Show>
+        <Text class="absolute right-[18] top-0 text-xs text-[#5d708c]">{props.badge}</Text>
+        <Text
+          class={
+            store.conn() === "live"
+              ? "absolute right-[6] top-0 text-xs text-[#61c16d]"
+              : "absolute right-[6] top-0 text-xs text-[#c95c5c]"
+          }
+        >
+          ●
+        </Text>
+      </View></Show>
+
+      <Show when={cursorOn()}>
+        <View
+          class="absolute"
+          style={{
+            translateX: cursorLeft(),
+            translateY: cursorTop(),
+            width: m.cellW,
+            height: m.cellH,
+            // Translucent block under the glyphs (rows paint after this).
+            bgColor: ((0x66 << 24) | (rgbToAbgr(THEME_CURSOR) & 0xffffff)) >>> 0,
+          }}
+        />
+      </Show>
+
+      {rowCanvas}
+      <View ref={previewNode} debugName="TypingPreview" class="absolute left-0 top-0 w-[400] h-[10] opacity-0">
+        <Text ref={previewText} class="absolute left-0 top-0 w-[400] h-[10] font-mono text-xs text-[#d8dee9]" style={{ lineHeight: m.cellH, tracking: m.track }} />
+        <View ref={previewLine} class="absolute left-0 bottom-0 w-[1] h-[1] origin-left bg-[#52779d]" />
+      </View>
+
+      <Show when={store.conn() !== "live" && !store.history?.manifest()}>
         <View class="absolute left-0 right-0 top-0 bottom-0 flex-col items-center justify-center gap-[6] bg-[#10151cf0]">
           <Text class="text-lg text-[#9fb6d8] font-bold">pocket term</Text>
           <Text class="text-xs text-[#5d708c]">{connectionLabel(store)}</Text>

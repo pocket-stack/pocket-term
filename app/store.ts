@@ -1,13 +1,13 @@
-// app/store.ts — the device-side replica state. The companion daemon
-// owns terminal truth; this store only applies ordered grid updates onto
-// per-row signals and turns UI intents into protocol lines. gen/seq guard the
-// one lossy hop (the svc line queue drops oldest under backlog): a gap asks
-// the host for a fresh snapshot instead of rendering from a hole.
+// Visible terminal replica. Completed grid generations commit atomically;
+// sequence gaps request a snapshot. PTYs and scrollback remain on the Mac.
 
-import { createSignal, type Accessor } from "solid-js";
-import { getOps } from "@pocketjs/framework";
+import { batch, createMemo, createSignal, type Accessor } from "solid-js";
+import { virtualNow } from "@pocketjs/framework/clock";
+import { getOps } from "@pocketjs/framework/host";
 import {
+  DYNAMIC_SLOTS,
   TERM_PROTO,
+  type ClientLine,
   type Cursor,
   type HostInputLine,
   type HostLine,
@@ -15,8 +15,11 @@ import {
   type Role,
   type Run,
   type SessionInfo,
-} from "./protocol.ts";
-import type { Svc } from "./svc.ts";
+  isDynamicSlot,
+} from "../shared/protocol.ts";
+import type { TermChannel } from "./channel.ts";
+import { createTermHistory, type TermHistory } from "./history.ts";
+import { createTypingPrediction, type TypingPreview } from "./prediction.ts";
 
 export type ConnState = "no-svc" | "search" | "link" | "live";
 
@@ -59,6 +62,9 @@ function base64ToBytes(text: string): Uint8Array {
 }
 
 export interface TermStore {
+  history?: TermHistory;
+  preview: Accessor<TypingPreview | undefined>;
+  setPreview(on: boolean): void;
   conn: Accessor<ConnState>;
   hostName: Accessor<string>;
   sessions: Accessor<SessionInfo[]>;
@@ -70,10 +76,13 @@ export interface TermStore {
   /** Glyphs delivered at runtime for codepoints the build never baked; the
    *  count is what the status bar reports. */
   dynamicGlyphs: Accessor<number>;
+  status(): string;
+  dispose(): void;
+  paste(s: string): void;
   /** Pump the channel — call exactly once per frame. */
   frame(): void;
   sendText(s: string): void;
-  sendKey(k: KeyName | string, ctrl?: boolean, alt?: boolean): void;
+  sendKey(k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean): void;
   scroll(lines: number): void;
   newSession(): void;
   kill(sid: number): void;
@@ -90,7 +99,7 @@ export interface TermStoreOptions {
   role?: Role;
 }
 
-export function createTermStore(options: TermStoreOptions, svc: Svc | null): TermStore {
+export function createTermStore(options: TermStoreOptions, svc: TermChannel | null): TermStore {
   const { cols, rows, cell } = options;
   const role: Role = options.role ?? "device";
   const [conn, setConn] = createSignal<ConnState>(svc === null ? "no-svc" : "search");
@@ -101,12 +110,40 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
   const [scrollback, setScrollback] = createSignal(0);
   const [bell, setBell] = createSignal(false);
   const [dynamicGlyphs, setDynamicGlyphs] = createSignal(0);
+  const [status, setStatus] = createSignal("");
   const rowSignals = Array.from({ length: rows }, () => createSignal<Run[]>([]));
+  const [preview, setPreview] = createSignal<TypingPreview>();
+  const prediction = createTypingPrediction(y => rowSignals[y][0](), cursor, setPreview, cols, rows);
+  const displayedCursor = createMemo(() => preview()?.cursor ?? cursor());
+  const coverage = new Map<number, Set<number>>();
+  const [atlasVersion, setAtlasVersion] = createSignal(0);
+  const history = svc?.historyIO ? createTermHistory(svc.historyIO, y => rowSignals[y][0], rows, cell[1], {
+    ready(runs) {
+      atlasVersion();
+      return runs.every(run => !isDynamicSlot(run[4]) || [...run[1]].every(ch => coverage.get(run[4]!)?.has(ch.codePointAt(0)!)));
+    },
+    demand(rows) {
+      const wanted = new Map<string, number>();
+      for (const row of rows) for (const run of row) if (isDynamicSlot(run[4])) {
+        const chars = [...run[1]], wide = (run[5] ?? run[1].length) > chars.length;
+        for (const ch of chars) if (wanted.size < 1024) wanted.set(ch, wide ? 2 : 1);
+      }
+      const entries = [...wanted], lines: ClientLine[] = [];
+      for (let at = 0; at < Math.max(1, entries.length); at += 224) {
+        const chunk = entries.slice(at, at + 224);
+        lines.push({ t: "glyphs", one: chunk.filter(e => e[1] === 1).map(e => e[0]).join(""), two: chunk.filter(e => e[1] === 2).map(e => e[0]).join(""),
+          ...(at === 0 ? { reset: 1 as const } : {}), ...(at + 224 < entries.length ? { more: 1 as const } : {}) });
+      }
+      if (svc.sendBatch) return svc.sendBatch(lines);
+      lines.forEach(line => svc.send(line)); return true;
+    },
+  }, () => !svc.inputPending?.()) : undefined;
 
   let wasOpen = false;
   let gen = -1;
   let seq = -1;
   let sawGrid = false;
+  let staged: Map<number, Run[]> | undefined;
   let resyncCooldown = 0;
   let bellFrames = 0;
   /** Survives a reconnect so the console comes back to the session it was
@@ -120,13 +157,14 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
     gen: number;
     seq: number;
     parts: string[];
+    chars: number;
   }
   const atlasRx = new Map<number, AtlasRx>();
   const glyphCounts = new Map<number, number>();
 
   const clearGrid = () => {
     for (const [, set] of rowSignals) set([]);
-    setCursor(null);
+    prediction.reset(); setCursor(null);
     setScrollback(0);
   };
 
@@ -137,24 +175,32 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
   };
 
   const applyAtlas = (line: Extract<HostLine, { t: "atlas" }>) => {
+    if (!(DYNAMIC_SLOTS as readonly number[]).includes(line.slot) || typeof line.b64 !== "string" || line.b64.length > 6144) return;
     let rx = atlasRx.get(line.slot);
     if (rx === undefined || line.gen !== rx.gen) {
       if (line.seq !== 0) return; // joined mid-bake; the next one starts clean
-      rx = { gen: line.gen, seq: -1, parts: [] };
+      rx = { gen: line.gen, seq: -1, parts: [], chars: 0 };
       atlasRx.set(line.slot, rx);
     }
     if (line.seq !== rx.seq + 1) {
-      atlasRx.delete(line.slot); // a gap; drop the bake and wait for the next
+      atlasRx.delete(line.slot);
+      requestResync();
       return;
     }
     rx.seq = line.seq;
-    rx.parts.push(line.b64);
+    if (rx.chars + line.b64.length > 262144) { atlasRx.delete(line.slot); requestResync(); return; }
+    rx.parts.push(line.b64); rx.chars += line.b64.length;
     if (line.more === 1) return;
     const blob = base64ToBytes(rx.parts.join(""));
-    rx.parts = [];
+    rx.parts = []; rx.chars = 0;
     const load = getOps().loadFontAtlas;
     if (!load || blob.length < 16) return;
     load(blob);
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength), count = view.getUint16(6, true);
+    if (16 + count * 8 <= blob.length) {
+      coverage.set(line.slot, new Set(Array.from({ length: count }, (_, n) => view.getUint32(16 + n * 8, true))));
+      setAtlasVersion(n => n + 1);
+    }
     // Each blob's header carries its own glyph count (spec FONT ATLAS v3);
     // the status line reports the whole chain's.
     glyphCounts.set(line.slot, blob[6] | (blob[7] << 8));
@@ -176,7 +222,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
       }
       gen = line.gen;
       seq = -1;
-      clearGrid();
+      staged = new Map();
     }
     if (line.seq !== seq + 1) {
       if (line.seq <= seq) return; // duplicate; TCP makes this a host bug
@@ -184,33 +230,75 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
       return;
     }
     seq = line.seq;
+    if (!staged) staged = new Map();
     for (const update of line.rows) {
       const [y, ...runs] = update;
-      if (y >= 0 && y < rows) rowSignals[y][1](runs);
+      if (y >= 0 && y < rows) staged.set(y, runs);
     }
-    if (line.cur) setCursor(line.cur);
-    if (line.sb !== undefined) setScrollback(line.sb);
-    sawGrid = true;
-    setConn("live");
+    if (line.more) return;
+    batch(() => {
+      if (line.full || line.history && line.history.epoch !== history?.manifest()?.epoch) prediction.reset();
+      for (const [y, runs] of staged!) rowSignals[y][1](runs);
+      staged = undefined;
+      if (line.cur) setCursor(line.cur);
+      if (line.sb !== undefined) setScrollback(line.sb);
+      if (line.history) history?.adopt(line.sid, line.history);
+      sawGrid = true;
+      prediction.authoritative(line.ack, virtualNow() * 1000);
+      setConn("live");
+    });
   };
 
   const sendText = (s: string) => {
-    if (s.length > 0) svc?.send({ t: "ch", s });
+    if (!wasOpen || activeSid() < 0) return;
+    if (s.length > 0 && s.length <= 256) {
+      history?.goLive(); const line: ClientLine = { t: "ch", s }, id = svc?.send(line);
+      if (id && conn() === "live") prediction.input(line, id, virtualNow() * 1000); else prediction.reset();
+    }
   };
-  const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean) => {
-    svc?.send({
+  const sendKey = (k: KeyName | string, ctrl?: boolean, alt?: boolean, shift?: boolean) => {
+    if (!wasOpen || activeSid() < 0) return;
+    history?.goLive();
+    const line: ClientLine = {
       t: "key",
       k,
       ...(ctrl ? { ctrl: 1 as const } : {}),
       ...(alt ? { alt: 1 as const } : {}),
-    });
+      ...(shift ? { shift: 1 as const } : {}),
+    };
+    const id = svc?.send(line);
+    if (id && conn() === "live") prediction.input(line, id, virtualNow() * 1000); else prediction.reset();
+  };
+  const paste = (text: string) => {
+    if (!wasOpen || activeSid() < 0 || !text) return;
+    prediction.reset(); history?.goLive();
+    if (text.length > 8192) { setStatus("Paste exceeds 8192 characters"); return; }
+    const chunks: string[] = [];
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(text.length, at + 128);
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+      chunks.push(text.slice(at, end)); at = end;
+    }
+    const lines: ClientLine[] = chunks.map((s, i) => ({ t: "paste", s, phase: chunks.length === 1 ? "single" : i === 0 ? "start" : i === chunks.length - 1 ? "end" : "more" }));
+    if (svc?.sendBatch) svc.sendBatch(lines);
+    else lines.forEach(line => svc?.send(line));
   };
   const scroll = (lines: number) => {
-    if (lines !== 0) svc?.send({ t: "scroll", d: lines });
+    prediction.reset();
+    if (history) history.scroll(lines);
+    else if (lines !== 0) svc?.send({ t: "scroll", d: lines });
   };
 
   const apply = (line: HostLine | HostInputLine) => {
     switch (line.t) {
+      case "transport-reset":
+        gen = -1; seq = -1; staged = undefined; sawGrid = false;
+        clearGrid(); atlasRx.clear(); glyphCounts.clear(); setDynamicGlyphs(0);
+        history?.reset();
+        coverage.clear(); setAtlasVersion(n => n + 1);
+        setConn("link");
+        break;
       case "hello":
         // The local host says hello too, with a viewport and no proto. Only
         // the companion's introduces the session.
@@ -229,10 +317,10 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
         sendText(line.s);
         break;
       case "key":
-        sendKey(line.k, line.ctl === true, line.alt === true);
+        sendKey(line.k, line.ctl === true, line.alt === true, line.sh === true);
         break;
       case "paste":
-        sendText(line.text);
+        paste(line.text);
         break;
       case "scroll":
         // A wheel notch is worth a line of history.
@@ -248,7 +336,9 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
       case "sessions":
         setSessions(line.list);
         if (line.active !== activeSid()) {
+          clearGrid(); sawGrid = false; staged = undefined; setConn("link");
           setActiveSid(line.active);
+          history?.select(line.active);
           if (line.active >= 0) lastWanted = line.active;
         }
         if (line.list.length === 0) {
@@ -259,6 +349,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
           gen = -1;
           seq = -1;
           sawGrid = false;
+          staged = undefined;
           lastWanted = -1;
         }
         break;
@@ -280,22 +371,29 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
 
   const attach = (sid: number) => {
     if (sid === activeSid()) return;
-    lastWanted = sid;
+    prediction.reset(); lastWanted = sid;
     svc?.send({ t: "attach", sid });
   };
 
   return {
+    history, preview, setPreview: prediction.enabled,
     conn,
     hostName,
     sessions,
     activeSid,
     row: (y) => rowSignals[y][0],
-    cursor,
-    scrollback,
+    cursor: displayedCursor,
+    scrollback: () => history?.manifest() ? history.back() : scrollback(),
     bell,
     dynamicGlyphs,
+    status,
+    dispose() { history?.dispose(); svc?.dispose?.(); atlasRx.clear(); },
+    paste,
     frame() {
+      prediction.frame(virtualNow() * 1000);
       if (svc === null) return;
+      const transportStatus = svc.status?.() ?? "";
+      if (transportStatus) setStatus(transportStatus);
       if (resyncCooldown > 0) resyncCooldown -= 1;
       if (bellFrames > 0 && --bellFrames === 0) setBell(false);
       const open = svc.open();
@@ -305,6 +403,7 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
         gen = -1;
         seq = -1;
         sawGrid = false;
+        staged = undefined;
         atlasRx.clear();
         glyphCounts.clear();
         svc.send({
@@ -314,25 +413,28 @@ export function createTermStore(options: TermStoreOptions, svc: Svc | null): Ter
           rows,
           cell,
           role,
+          ...(history ? { history: 1 as const } : {}),
           ...(lastWanted >= 0 ? { want: lastWanted } : {}),
         });
       }
       wasOpen = open;
       if (!open) {
-        setConn("search");
+        prediction.reset(); setConn("search");
+        history?.setOnline(false); history?.frame();
         return;
       }
       if (conn() !== "live" || !sawGrid) setConn(sawGrid ? "live" : "link");
       for (const line of svc.poll()) apply(line);
+      history?.setOnline(sawGrid && conn() === "live"); history?.frame();
     },
     sendText,
     sendKey,
     scroll,
     newSession() {
-      svc?.send({ t: "new" });
+      prediction.reset(); svc?.send({ t: "new" });
     },
     kill(sid) {
-      if (sid >= 0) svc?.send({ t: "kill", sid });
+      prediction.reset(); if (sid >= 0) svc?.send({ t: "kill", sid });
     },
     attach,
     attachSibling(step) {

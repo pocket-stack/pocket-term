@@ -1,5 +1,9 @@
 # Runtime upgrade validation
 
+**Historical record for the 57×17 svc launcher.** Current installation and
+controls are in the [README](../README.md); the accepted paired offload build
+is documented in [OFFLOAD-UPGRADE.md](OFFLOAD-UPGRADE.md).
+
 Validated on 2026-09-06 against PocketJS main
 `10aee589d95aca34802ea4f8c79023e929434a92`.
 

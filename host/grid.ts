@@ -1,10 +1,7 @@
-// host/grid.ts — cell resolution, run building and row chunking:
-// how the authoritative xterm buffer becomes the wire's Run/RowUpdate shapes.
-// Dependency-free on purpose — serve.ts feeds it real IBufferCells through
-// the structural XtermCellLike interface, tests feed it fakes, and the repo
-// typecheck gate never needs the daemon's native modules.
+// libghostty cells to bounded row runs; terminal colors and widths remain
+// authoritative. The renderer applies the resolved colors and cell geometry.
 
-import { LINE_BUDGET, THEME_BG, THEME_FG, type Run, type RowUpdate } from "../app/protocol.ts";
+import { LINE_BUDGET, THEME_BG, THEME_FG, type Run, type RowUpdate } from "../shared/protocol.ts";
 
 /** The slice of libghostty's CellData this module reads (@wterm/core). The
  *  core resolves colour itself — palette lookup, bright-bold, the configured
@@ -86,7 +83,7 @@ function halve(rgb: number): number {
  */
 export function resolveCell(cell: TerminalCell): Cell {
   const width = (cell.width ?? 1) as 0 | 1 | 2;
-  const raw = width === 0 ? "" : (cell.chars ?? String.fromCodePoint(cell.char || 32));
+  const raw = width === 0 ? "" : (cell.chars ?? String.fromCodePoint(cell.char || 32)).normalize("NFC");
   // Normalize the other spaces to the ordinary one here, so everything
   // downstream — run merging, glyph routing — sees a blank.
   const first = raw.codePointAt(0);
@@ -111,7 +108,7 @@ export function resolveCell(cell: TerminalCell): Cell {
 export function rowRuns(cells: readonly Cell[]): Run[] {
   const runs: Run[] = [];
   let run:
-    | { col: number; text: string; fg: number; bg: number; slot?: number; span: number }
+    | { col: number; text: string; fg: number; bg: number; slot?: number; span: number; columns: number }
     | null = null;
   let pendingBlanks = 0;
   const close = () => {
@@ -146,6 +143,7 @@ export function rowRuns(cells: readonly Cell[]): Run[] {
       run.fg === cell.fg &&
       run.bg === cell.bg &&
       run.slot === cell.slot &&
+      (cell.slot === undefined || run.columns === columns) &&
       (pendingBlanks === 0 || (cell.slot === undefined && pendingBlanks <= 4))
     ) {
       run.text += " ".repeat(pendingBlanks) + ch;
@@ -154,7 +152,7 @@ export function rowRuns(cells: readonly Cell[]): Run[] {
       continue;
     }
     close();
-    run = { col, text: ch, fg: cell.fg, bg: cell.bg, slot: cell.slot, span: columns };
+    run = { col, text: ch, fg: cell.fg, bg: cell.bg, slot: cell.slot, span: columns, columns };
   }
   close();
   return runs;

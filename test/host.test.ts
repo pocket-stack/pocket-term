@@ -21,7 +21,7 @@ import {
   THEME_BG,
   THEME_FG,
   type RowUpdate,
-} from "../app/protocol.ts";
+} from "../shared/protocol.ts";
 import {
   FrameParser,
   encodeBeacon,
@@ -45,7 +45,7 @@ import {
   forceAdvances,
   isBakedCodepoint,
 } from "../host/glyphs.ts";
-import { DYNAMIC_SLOTS } from "../app/protocol.ts";
+import { DYNAMIC_SLOTS } from "../shared/protocol.ts";
 
 // ---------------------------------------------------------------------------
 // wire
@@ -285,6 +285,14 @@ describe("key encoding", () => {
     // it into NUL exactly as ctrl+space from a real keyboard would.
     expect(encodeKey("Space", true, false, false)).toBe("\x00");
     expect(encodeKey("Space", false, false, false)).toBe(" ");
+  });
+
+  test("function keys, shift-tab and combined navigation modifiers", () => {
+    expect(encodeKey("F1", false, false, false)).toBe("\x1bOP");
+    expect(encodeKey("F12", true, true, false, true)).toBe("\x1b[24;8~");
+    expect(encodeKey("Tab", false, false, false, true)).toBe("\x1b[Z");
+    expect(encodeKey("Home", true, false, true)).toBe("\x1b[1;5H");
+    expect(encodeKey("Right", true, true, true)).toBe("\x1b[1;7C");
   });
 });
 

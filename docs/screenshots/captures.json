@@ -1,0 +1,29 @@
+{
+  "renderer": "PocketJS native 3DS host in Azahar",
+  "data": "deterministic showcase fixture",
+  "capture_frame": 40,
+  "runtime": "1c0735faef54ce96484cf4dd31113b9d919fc23c",
+  "fixture_sha256": "a6a98e070c46ecf1ede9265e09244ef0a1177877111021de10f646f7221e3ae3",
+  "commands": [
+    "bun run visual --showcase",
+    "bun run visual --showcase --settings"
+  ],
+  "images": [
+    {
+      "file": "terminal.png",
+      "dimensions": [
+        400,
+        480
+      ],
+      "sha256": "e8d6a5f68d1bf349f1ae83f365d5e48a08cd0f26ea83c274c36dd30361589572"
+    },
+    {
+      "file": "settings.png",
+      "dimensions": [
+        320,
+        240
+      ],
+      "sha256": "e804b1d303c08381d98703c660057142a2b5d80be91adce6d549624414f480c6"
+    }
+  ]
+}
