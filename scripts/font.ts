@@ -4,19 +4,15 @@ import opentype from "opentype.js";
 import { bakeSlot } from "../vendor/pocketjs/framework/compiler/bake-font.ts";
 import { TERM_GLYPHS } from "../shared/protocol.ts";
 import { TERM_FONT_SLOT } from "../shared/layout.ts";
-import { bitmapCell, parseBdf } from "../shared/bitmap-font.ts";
+import { bitmapCell } from "../shared/bitmap-font.ts";
+import { FONT_SOURCES, loadBitmapFont, type TerminalFontName } from "../shared/font-sources.ts";
 
 // Unicode box-drawing arm masks (N/E/S/W) and stroke weights.
 const BOX_SHAPES = [26, 42, 21, 37, 26, 42, 21, 37, 27, 43, 21, 37, 22, 38, 38, 38, 28, 44, 44, 44, 19, 35, 35, 35, 25, 41, 41, 41, 23, 39, 39, 39, 39, 39, 39, 39, 29, 45, 45, 45, 45, 45, 45, 45, 30, 46, 46, 46, 46, 46, 46, 46, 27, 43, 43, 43, 43, 43, 43, 43, 31, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 26, 42, 21, 37, 58, 53, 54, 54, 54, 60, 60, 60, 51, 51, 51, 57, 57, 57, 55, 55, 55, 61, 61, 61, 62, 62, 62, 59, 59, 59, 63, 63, 63, 22, 28, 25, 19, 27, 27, 16, 24, 17, 18, 20, 40, 33, 34, 36, 42, 37, 42, 37];
 
-export const FONT_SOURCES = {
-  spleen: "spleen/spleen-5x8.bdf", spleentt: "spleentt/spleentt-5x8.bdf", fusion: "fusion-pixel/fusion-pixel-10px-monospaced-zh_hans.bdf",
-} as const;
-export type TerminalFontName = keyof typeof FONT_SOURCES;
-
 export function terminalFont(face: TerminalFontName = "spleentt"): Uint8Array {
-  const bitmap = parseBdf(readFileSync(new URL(`../assets/fonts/${FONT_SOURCES[face]}`, import.meta.url), "utf8"));
-  const fallback = parseBdf(readFileSync(new URL(`../assets/fonts/${FONT_SOURCES.fusion}`, import.meta.url), "utf8"));
+  const bitmap = loadBitmapFont(face);
+  const fallback = loadBitmapFont("fusion");
   const source = readFileSync(new URL("../vendor/pocketjs/assets/fonts/JetBrainsMono-Regular.ttf", import.meta.url));
   const font = opentype.parse(source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength) as ArrayBuffer);
   const chars = [...new Set([...Array.from({ length: 95 }, (_, n) => n + 32), ...[...TERM_GLYPHS].map(ch => ch.codePointAt(0)!)])].sort((a, b) => a - b);

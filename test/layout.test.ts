@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { TERM_FONT, TERM_FONTS } from "../app/font.generated.ts";
 import { TERM_LAYOUT } from "../shared/layout.ts";
 import { keyAt, type LayerName } from "../app/keyboard.tsx";
-import { FONT_SOURCES, terminalFont, type TerminalFontName } from "../scripts/font.ts";
-import { readFileSync } from "node:fs";
-import { bitmapCell, parseBdf } from "../shared/bitmap-font.ts";
+import { terminalFont } from "../scripts/font.ts";
+import { loadBitmapFont, type TerminalFontName } from "../shared/font-sources.ts";
+import { bitmapCell } from "../shared/bitmap-font.ts";
 import { bakeBitmapAtlas } from "../host/glyphs.ts";
 
 test("the shipped atlas and 80 x 24 grid reach all four screen edges", () => {
@@ -43,7 +43,7 @@ test("box and block ink reaches adjacent cells without font-metric gaps", () => 
 test("all three terminal faces preserve the source's ASCII bitmap and have no antialiasing samples", () => {
   for (const name of Object.keys(TERM_FONTS) as TerminalFontName[]) {
     const b = Buffer.from(TERM_FONTS[name], "base64"), v = new DataView(b.buffer, b.byteOffset, b.byteLength), n = v.getUint16(6, true);
-    const source = parseBdf(readFileSync(new URL(`../assets/fonts/${FONT_SOURCES[name]}`, import.meta.url), "utf8"));
+    const source = loadBitmapFont(name);
     expect(b).toEqual(Buffer.from(terminalFont(name)));
     expect([...b.subarray(16 + n * 8)].every(a => a === 0 || a === 255)).toBe(true);
     for (let i = 0; i < n; i++) {
@@ -54,7 +54,7 @@ test("all three terminal faces preserve the source's ASCII bitmap and have no an
 });
 
 test("Fusion Pixel CJK keeps its complete 10x10 cell next to a narrow dynamic glyph", () => {
-  const source = parseBdf(readFileSync(new URL(`../assets/fonts/${FONT_SOURCES.fusion}`, import.meta.url), "utf8"));
+  const source = loadBitmapFont("fusion");
   const b = bakeBitmapAtlas(source, 19, new Map([["你".codePointAt(0)!, 2], ["é".codePointAt(0)!, 1]]), 5, 10);
   const v = new DataView(b.buffer), n = v.getUint16(6, true);
   expect([b[8], b[9]]).toEqual([10, 10]);

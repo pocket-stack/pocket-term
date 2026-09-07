@@ -36,7 +36,8 @@ import opentype, { type Font } from "opentype.js";
 import { bakeSlot } from "../vendor/pocketjs/framework/compiler/bake-font.ts";
 import { FONT_CMAP_ENTRY_SIZE, FONT_HEADER_SIZE, FONT_MAGIC, FONT_VERSION } from "../vendor/pocketjs/contracts/spec/spec.ts";
 import { DYNAMIC_SLOTS, TERM_GLYPHS } from "../shared/protocol.ts";
-import { bitmapCell, parseBdf, type BitmapFont } from "../shared/bitmap-font.ts";
+import { bitmapCell, type BitmapFont } from "../shared/bitmap-font.ts";
+import { bitmapFontSource, loadBitmapFont } from "../shared/font-sources.ts";
 
 const ROOT = fileURLToPath(new URL("../vendor/pocketjs/", import.meta.url));
 
@@ -267,8 +268,8 @@ export class DynamicAtlasSet {
 
   #ensure(): FaceAtlas[] {
     if (this.#faces !== null) return this.#faces;
-    const path = fileURLToPath(new URL("../assets/fonts/fusion-pixel/fusion-pixel-10px-monospaced-zh_hans.bdf", import.meta.url));
-    const faces: FaceAtlas[] = [new FaceAtlas(DYNAMIC_SLOTS[0], "fusion-pixel", parseBdf(readFileSync(path, "utf8")), path)];
+    const path = fileURLToPath(bitmapFontSource("fusion"));
+    const faces: FaceAtlas[] = [new FaceAtlas(DYNAMIC_SLOTS[0], "fusion-pixel", loadBitmapFont("fusion"), path)];
     for (const rung of FONT_CHAIN) {
       if (faces.length >= DYNAMIC_SLOTS.length) break;
       const found = loadFont(rung.paths);

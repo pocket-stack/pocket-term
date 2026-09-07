@@ -1,2 +1,2 @@
-assets/fonts/**/*.bdf linguist-vendored=true
+assets/fonts/**/*.bdf.gz binary linguist-vendored=true
 app/font.generated.ts linguist-generated=true
