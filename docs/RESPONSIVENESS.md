@@ -132,5 +132,6 @@ The echo frame shows the third `a` and its five-pixel underline before its
 mock reply, while the authoritative grid still contains `$ aa`. Motion
 frames 181–184 translate unchanged row pixels by 12, 11 and 10px respectively;
 other frames also fill delayed rows. The GIF plays slowly for inspection.
-Fresh hardware measurements and subjective stick/touch feel remain separate
-acceptance steps.
+The user accepted the deployed protocol-6 build after the virtual-clock
+update. Numerical physical latency and frame-rate measurements remain
+separate from these simulated and native-fixture results.

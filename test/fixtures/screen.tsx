@@ -31,9 +31,21 @@ const rows: RowUpdate[] = Array.from({ length: 24 }, (_, y) => [y, [0, y === 0 |
   "$ ",
 ][(y - 1) % 21]}`.padEnd(80, " ").slice(0, 80), y % 4 === 0 ? 0x81a2be : -1, y === 5 ? 0x243047 : -1]]);
 const sessions = Array.from({ length: 12 }, (_, n) => ({ sid: n + 1, title: `zsh #${n + 1}` }));
-export function mountFixture(historyMode = false, settingsMode = false, previewMode = false) {
+// Documentation uses deterministic shell output with the production UI.
+const showcaseRows: RowUpdate[] = [
+  "$ cd ~/code/pocket-term", "$ ls", "app/     assets/  docs/    host/    mirror/",
+  "scripts/ shared/  test/    vendor/  README.md", "",
+  "$ git status --short --branch", "## main...origin/main", "",
+  "$ printf 'terminal size: '; stty size", "terminal size: 24 80", "",
+  "$ printf '\\033[32mready\\033[0m\\n'", "ready", "",
+  "$ ls docs/", "HISTORY-THROUGHPUT.md  RESPONSIVENESS.md",
+  "SCROLLBACK.md          OFFLOAD-UPGRADE.md", "",
+  "$ ps -o pid,tty,comm -p $$", "  PID TTY      COMM", " 1042 ttys003  /bin/zsh", "", "$ ", "",
+].map((text, y) => [y, [0, text, y === 6 || y === 12 ? 0x9ccf9c : text.startsWith("$") ? 0x9fb6d8 : -1, -1]]);
+export function mountFixture(historyMode = false, settingsMode = false, previewMode = false, showcase = false) {
 const queue: string[] = []; let sequence = 0, ack = 0, held: any, gen = 0, ticks = 0, gridSeq = 0, typed = "";
-const fixtureRows = previewMode ? rows.map(r => r[0] === 12 ? [12, [0, "$ ", -1, -1]] as RowUpdate : r) : rows;
+const fixtureRows = showcase ? showcaseRows : previewMode ? rows.map(r => r[0] === 12 ? [12, [0, "$ ", -1, -1]] as RowUpdate : r) : rows;
+const fixtureSessions = showcase ? [{ sid: 5, title: "shell" }, { sid: 6, title: "vim" }, { sid: 7, title: "logs" }] : sessions;
 const deferred: { at: number; line: HostLine }[] = [];
 const responses: { at: number; value: string }[] = [];
 function push(line: HostLine) {
@@ -58,9 +70,9 @@ function push(line: HostLine) {
         ack = item.id; const command = item.line;
         if (command.t === "hello" || command.t === "attach") {
           push({ t: "hello", proto: TERM_PROTO, name: "evandeMacBook-Pro" });
-          push({ t: "sessions", list: sessions, active: command.sid ?? 5 });
+          push({ t: "sessions", list: fixtureSessions, active: command.sid ?? 5 });
           gridSeq = 0;
-          push({ t: "grid", sid: command.sid ?? 5, gen: ++gen, seq: gridSeq++, ack, full: 1, rows: fixtureRows, cur: previewMode ? [2, 12, 1] : [79, 23, 1], ...(historyMode ? { history: { epoch: "fixture-history", first: 0, end: 2000, alternate: false } } : {}) });
+          push({ t: "grid", sid: command.sid ?? 5, gen: ++gen, seq: gridSeq++, ack, full: 1, rows: fixtureRows, cur: showcase ? [2, 22, 1] : previewMode ? [2, 12, 1] : [79, 23, 1], ...(historyMode ? { history: { epoch: "fixture-history", first: 0, end: 2000, alternate: false } } : {}) });
         } else if (previewMode && command.t === "ch") {
           typed += command.s;
           deferred.push({ at: ticks + 8, line: { t: "grid", sid: 5, gen, seq: gridSeq++, ack, rows: [[12, [0, "$ " + typed, -1, -1]]], cur: [2 + typed.length, 12, 1] } });

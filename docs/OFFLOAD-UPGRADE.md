@@ -1,5 +1,40 @@
 # Paired terminal upgrade validation
 
+## Accepted protocol-6 build
+
+**The user accepted the deployed build and authorized merging PR #2.** The
+launcher containing the framework-clock prediction fix (`5434243`) was
+installed on 2026-09-07 at 01:20 UTC. Both the launcher and the app-specific
+pairing key were downloaded again and matched their local originals.
+The source-font compression in `d787d41` reproduced the same launcher and
+package bytes. It retained the unmodified upstream glyphs and licenses.
+
+| Check | Result |
+| --- | --- |
+| Guest and host types; unit suite | Passed: 69 tests, 1,494 assertions |
+| Actual provider and macOS PTYs | Passed: 2 integrations, including saved Vim/Nano edits |
+| Prediction clock | Production and fixtures use the framework virtual clock; 20Hz/60Hz store tests prohibit wall-clock reads |
+| Font sources and generated atlases | Lossless source archives and byte-identical atlas reproduction |
+| Native preview | Frame 93 retained the unconfirmed third character and its five-pixel underline |
+| Physical deployment | Launcher and pairing key read back byte-identically |
+| User acceptance | Confirmed; merge authorized |
+
+| Deployed artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| pocketterm-main.3dsx | 2,027,680 | `1c369ee2d00a6cee742a80bbc6125f1b1ac702e7a643ab62e9d0e7bf97751c56` |
+| pocketterm-main.pocket | 725,224 | `839fc37ca38ddc16ec4f528bbc91b32cf8f1ae411be528b24675ad942e1694ed` |
+
+The launcher is installed at `/3DS/pocketterm-main.3dsx`. Its previous version
+was backed up at
+`/pocketjs/runtime/native-backups/pocketterm-main-21a4a120c9ef2978.3dsx`.
+Existing Mac PTYs were preserved during installation. This acceptance does
+not establish numerical physical latency, sustained Wi-Fi throughput or a
+guaranteed frame rate.
+
+The [current interface captures](screenshots/README.md) show the terminal and
+settings. The sections below retain **historical revision evidence**; their
+screenshots, hashes and pending checks describe those earlier revisions.
+
 ## Batched history revision
 
 **Protocol 6 groups up to 16 history rows per network request.** Cache keys
@@ -24,7 +59,7 @@ measurements and native comparison.
 | pocketterm-main.3dsx | 2,027,600 | `21a4a120c9ef297856082cbac6d102dfdc021d08a3e5e1b8ed39f9940914d55b` |
 | pocketterm-main.pocket | 725,144 | `b080e6f334108671de30fcfd95196fe6974bd18b3a1aea6fb0797ac90f3ed2ea` |
 
-The new launcher is installed at `/3DS/pocketterm-main.3dsx`; the previous
+That launcher was installed at `/3DS/pocketterm-main.3dsx`; the previous
 version was backed up and verified at
 `/pocketjs/runtime/native-backups/pocketterm-main-b349e7e97590e4d9.3dsx`.
 The receipt is `.pocket/last-deploy.json`. The protocol-6 companion is running;
